@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
-<title>MOB SKATE – v2</title>
+<title>MOB SKATE – v3</title>
 <meta name="theme-color" content="#0b0c10" />
 <link rel="preload" as="image" href="msst1.png">
 <link rel="preload" as="image" href="mobs.png">
@@ -24,12 +24,12 @@
       </div>
 
       <div class="ctrl">
-        <button id="btnBrake" class="btn" type="button" aria-label="Brake">ブレーキ</button>
-        <button id="btnJump" class="btn" type="button" aria-label="Jump">ジャンプ</button>
+        <button id="btnAccel" class="btn btn-accel" type="button" aria-label="Accelerate">アクセル</button>
+        <button id="btnJump"  class="btn btn-jump"  type="button" aria-label="Jump">ジャンプ</button>
       </div>
 
       <div class="tapHint" id="tapHint"></div>
-      <div class="ver">v2</div>
+      <div class="ver">v3</div>
 
       <div class="result" id="result">
         <div class="card">
@@ -45,6 +45,7 @@
     </div>
   </div>
 
-<script src="game.js"></script>
+<!-- JSは必ず外部読み込み＆defer -->
+<script src="game.js" defer></script>
 </body>
 </html>
