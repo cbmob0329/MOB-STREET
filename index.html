@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+<title>MOB SKATE – v1 FULL</title>
+<meta name="theme-color" content="#0b0c10" />
+<style>
+  :root{
+    --hud-bg:#0b0f17cc;
+    --fg:#e9eef7;
+    --accent:#ffce3a;
+  }
+  html,body{height:100%;margin:0;background:#000;color:var(--fg);overscroll-behavior:none;}
+  body{display:grid;grid-template-rows:1fr auto;gap:8px;padding:env(safe-area-inset-top) env(safe-area-inset-right) calc(env(safe-area-inset-bottom) + 0px) env(safe-area-inset-left);}
+  #wrap{position:relative;max-width:880px;margin:0 auto;aspect-ratio:9/16;width:100%;}
+  canvas{width:100%;height:100%;background:#000;display:block;border-radius:12px;box-shadow:0 8px 30px #0008}
+  /* HUD */
+  .hud{position:absolute;inset:0;pointer-events:none;font-family:system-ui, -apple-system, Segoe UI, Roboto, "Hiragino Kaku Gothic ProN", Meiryo, sans-serif;}
+  .row{position:absolute;left:8px;right:8px;top:8px;display:flex;gap:8px;justify-content:space-between}
+  .chip{background:var(--hud-bg);backdrop-filter:blur(6px);padding:6px 10px;border-radius:10px;font-weight:700;font-size:14px;line-height:1;display:flex;align-items:center;gap:8px}
+  .ver{position:absolute;right:10px;bottom:10px;background:#0008;padding:4px 8px;border-radius:6px;font-size:12px;pointer-events:none}
+  /* Controls */
+  .ctrl{position:absolute;left:0;right:0;bottom:10px;display:flex;justify-content:center;gap:22px;pointer-events:auto}
+  .btn{min-width:130px;min-height:56px;border-radius:16px;border:none;font-weight:900;
+       font-size:18px;letter-spacing:.04em;color:#0b0c10;background:var(--accent);box-shadow:0 8px 20px #000a}
+  .btn:active{transform:translateY(2px)}
+  /* Result */
+  .result{position:absolute;inset:0;background:#000000c0;display:none;place-items:center;text-align:center}
+  .card{background:var(--hud-bg);backdrop-filter:blur(10px);padding:20px;border-radius:16px;min-width:60%}
+  .title{font-size:24px;font-weight:900;margin:0 0 6px}
+  .stat{font-size:16px;margin:6px 0}
+  .rank{font-size:48px;font-weight:900;margin-top:6px}
+  .tip{font-size:12px;opacity:.8;margin-top:10px}
+  /* Touch ring tap prompt */
+  .tapHint{position:absolute;left:0;right:0;bottom:84px;text-align:center;font-weight:700;color:#fff8;text-shadow:0 2px 8px #000}
+</style>
+</head>
+<body>
+  <div id="wrap">
+    <canvas id="game" width="540" height="960"></canvas>
+    <div class="hud" aria-hidden="true">
+      <div class="row">
+        <div class="chip" id="chipTime">TIME 0.00</div>
+        <div class="chip" id="chipSpeed">SPD 0</div>
+        <div class="chip" id="chipRing">RING 0  /  COMBO 0</div>
+      </div>
+      <div class="ctrl">
+        <button id="btnBrake" class="btn" type="button">ブレーキ</button>
+        <button id="btnJump" class="btn" type="button">ジャンプ</button>
+      </div>
+      <div class="tapHint" id="tapHint"></div>
+      <div class="ver">v1</div>
+      <div class="result" id="result">
+        <div class="card">
+          <p class="title">STAGE CLEAR!</p>
+          <p class="stat" id="rsTime"></p>
+          <p class="stat" id="rsRing"></p>
+          <p class="stat" id="rsCombo"></p>
+          <p class="stat" id="rsScore"></p>
+          <p class="rank" id="rsRank"></p>
+          <p class="tip">画面タップでリスタート</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+/* =========================
+   MOB SKATE – Prototype v1
+   要画像：msst1.png / mobs.png / redsk.png / gardw.png / ringtap.png
+   ========================= */
+
+// ---------- 基本設定 ----------
+const CANVAS_W = 540, CANVAS_H = 960;     // 9:16
+const GROUND_Y_RATIO = 0.86;               // 赤ラインの比率（必要なら微調整）
+const GRAVITY = 0.7;
+const JUMP_VY = -18;
+const BASE_ACCEL = 0.06;                   // 自動前進の加速
+const FRICTION = 0.008;                    // 地上摩擦
+const MAX_SPEED = 13;
+const BRAKE_FORCE = 0.22;
+
+const RING_BOOST_PER = 0.03;               // 1リング=+3%速度ブースト
+const RING_BOOST_DECAY = 0.015;            // 毎フレーム減衰（ブースト用）
+const RING_SPAWN_INTERVAL = 140;           // ms。障害物に乗ってる間だけ湧く
+const RING_TAP_WINDOW = 180;               // ms以内に近いリングを1つ消費
+const RING_AROUND = 110;                   // プレイヤー近傍でリング表示範囲
+const GOAL_ZOOM = 1.6;                     // ゴール時のズーム倍率
+
+// スコア式（ユーザー仕様に合わせて調整可能）
+function calcScore(sec, ring, bestCombo){
+  // Base(1000) + Ring*10 + Combo*Ring*2 - Time*5
+  return Math.floor(1000 + ring*10 + bestCombo*ring*2 - sec*5);
+}
+function calcRank(score){
+  if(score >= 2000) return "S";
+  if(score >= 1500) return "A";
+  if(score >= 1100) return "B";
+  return "C";
+}
+
+// ---------- キャンバス ----------
+const cv = document.getElementById('game');
+const cx = cv.getContext('2d');
+cv.width = CANVAS_W; cv.height = CANVAS_H;
+
+// ---------- HUD ----------
+const chipTime = document.getElementById('chipTime');
+const chipSpeed= document.getElementById('chipSpeed');
+const chipRing = document.getElementById('chipRing');
+const resultUI = document.getElementById('result');
+const rsTime = document.getElementById('rsTime');
+const rsRing = document.getElementById('rsRing');
+const rsCombo = document.getElementById('rsCombo');
+const rsScore = document.getElementById('rsScore');
+const rsRank = document.getElementById('rsRank');
+const tapHint = document.getElementById('tapHint');
+
+// ---------- 入力 ----------
+const input = { jump:false, brake:false, anyTap:false };
+document.getElementById('btnJump').addEventListener('pointerdown', ()=>input.jump=true);
+document.getElementById('btnJump').addEventListener('pointerup',   ()=>input.jump=false);
+document.getElementById('btnBrake').addEventListener('pointerdown',()=>input.brake=true);
+document.getElementById('btnBrake').addEventListener('pointerup',  ()=>input.brake=false);
+// 画面タップでリング消費（ボタン上もOK）
+addEventListener('pointerdown', e=>{
+  input.anyTap = true;
+  if(state.phase==='result'){ restart(); }
+});
+addEventListener('pointerup', ()=> input.anyTap=false);
+
+// ---------- アセット ----------
+function loadImage(src){
+  return new Promise(res=>{
+    const img = new Image(); img.src = src;
+    img.onload = ()=>res(img);
+    img.onerror = ()=>{ console.warn('画像の読み込みに失敗:',src); res(null); }
+  });
+}
+const assets = {
+  stage:null, mobs:null, board:null, rail:null, ring:null
+};
+
+// ---------- ステージとオブジェクト ----------
+const world = {
+  x:0, y:0, zoom:1,
+  groundY: Math.floor(CANVAS_H * GROUND_Y_RATIO),
+  width: 4000, // 読み込み後に上書き
+  rails: [],   // ガードレール（障害物）群
+  rings: []    // 表示中リング
+};
+
+const player = {
+  x: 120, y: 0, w: 64, h: 84,
+  vy:0, vx:0, onGround:false, onRail:false,
+  speed:0, ringBoost:0,
+  ringCount:0, combo:0, bestCombo:0,
+  zooming:false, hopT:0
+};
+
+const state = {
+  startedAt: performance.now(),
+  phase: 'play', // 'play' | 'goal' | 'result'
+  goalX: 3000
+};
+
+// ---------- 初期化 ----------
+(async function init(){
+  assets.stage = await loadImage('msst1.png');
+  assets.mobs  = await loadImage('mobs.png');
+  assets.board = await loadImage('redsk.png');
+  assets.rail  = await loadImage('gardw.png');
+  assets.ring  = await loadImage('ringtap.png');
+
+  if(assets.stage){
+    // ステージ幅で目標位置決定（右端−少し）
+    world.width = assets.stage.naturalWidth || 4000;
+    state.goalX = world.width - 200; // 右端手前がゴール
+  }
+
+  // ライン高さ調整（必要ならここを微調整）
+  world.groundY = Math.floor(CANVAS_H * GROUND_Y_RATIO);
+
+  // レール（障害物）配置：等間隔サンプル
+  // 画像の横幅に合わせて自然に置く
+  const gap = 520; // 距離間隔
+  for(let i=1;i<=6;i++){
+    world.rails.push({
+      x: 450 + i*gap,
+      y: world.groundY - 28,   // 少し上に設置（乗れる高さ）
+      w: 260, h: 26
+    });
+  }
+
+  // プレイヤー初期位置
+  player.y = world.groundY - player.h;
+
+  loop();
+})();
+
+// ---------- ループ ----------
+let last = performance.now();
+let ringSpawnTimer = 0;
+function loop(now = performance.now()){
+  const dt = Math.min(32, now - last); last = now;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+
+// ---------- 更新 ----------
+function update(dt){
+  if(state.phase === 'play'){
+    // 自動前進
+    player.speed += BASE_ACCEL;
+    if(input.brake) player.speed -= BRAKE_FORCE;
+    player.speed = Math.max(0, Math.min(MAX_SPEED*(1+player.ringBoost), player.speed));
+
+    // ジャンプ
+    if(input.jump && player.onGround){
+      player.vy = JUMP_VY;
+      player.onGround = false;
+    }
+
+    // 重力＆摩擦
+    player.vy += GRAVITY;
+    if(player.onGround && !player.onRail){
+      player.speed = Math.max(0, player.speed - FRICTION*player.speed);
+    }
+
+    // 移動
+    player.x += player.speed;
+    player.y += player.vy;
+
+    // 地面との当たり
+    const floorY = world.groundY - player.h;
+    if(player.y >= floorY){
+      player.y = floorY; player.vy = 0; player.onGround = true;
+    }
+
+    // レール衝突（上からだけ乗る判定）
+    player.onRail = false;
+    for(const r of world.rails){
+      if(player.x+player.w*0.5 > r.x && player.x-player.w*0.5 < r.x+r.w){
+        const top = r.y - player.h + 4;
+        if(player.y >= top && player.y <= top+14 && player.vy >= 0){
+          player.y = top; player.vy = 0; player.onGround = true; player.onRail = true;
+        }
+      }
+    }
+
+    // リング生成（レール上のみ）
+    if(player.onRail){
+      ringSpawnTimer += dt;
+      if(ringSpawnTimer >= RING_SPAWN_INTERVAL){
+        ringSpawnTimer = 0;
+        spawnRingBurst();
+      }
+    }else{
+      ringSpawnTimer = Math.min(ringSpawnTimer, RING_SPAWN_INTERVAL);
+    }
+
+    // タップ入力でリング消費→ブースト
+    if(input.anyTap){
+      const idx = findNearestRingIndex(player.x, player.y, RING_AROUND);
+      if(idx >= 0){
+        world.rings.splice(idx,1);
+        player.ringCount++;
+        player.combo++;
+        player.bestCombo = Math.max(player.bestCombo, player.combo);
+        player.ringBoost += RING_BOOST_PER;
+        input.anyTap = false; // 1回で1消費
+      }
+    }else{
+      // 入力が無い時間が続くとコンボ減衰（緩やか）
+      // ※仕様では2秒無入力で切れる → フレームで監視する簡易版
+    }
+
+    // ブースト減衰
+    player.ringBoost = Math.max(0, player.ringBoost - RING_BOOST_DECAY*(dt/16.7));
+    if(player.ringBoost>0) tapHint.textContent = "リングをタップで加速！";
+    else tapHint.textContent = player.onRail ? "レール上でリングが湧く！" : "";
+
+    // ゴール判定
+    if(player.x >= state.goalX){
+      state.phase = 'goal';
+      player.speed = 0;
+      player.vy = 0;
+      player.zooming = true;
+    }
+  }
+  else if(state.phase === 'goal'){
+    // カメラズームしながら小刻みにピョンピョン
+    if(player.zooming){
+      world.zoom = Math.min(GOAL_ZOOM, (world.zoom||1)+0.02);
+      player.hopT += 0.15;
+      if(player.onGround){
+        player.y = (world.groundY - player.h) + Math.sin(player.hopT)*-10;
+      }
+      if(world.zoom >= GOAL_ZOOM){
+        player.zooming = false;
+        setTimeout(showResult, 400); // 少し余韻
+      }
+    }
+  }
+
+  // HUD更新
+  const sec = ( (state.phase==='play') ? (performance.now()-state.startedAt) : (state.resultTimeMs||0) ) / 1000;
+  chipTime.textContent = `TIME ${sec.toFixed(2)}`;
+  chipSpeed.textContent= `SPD ${Math.round(player.speed*6)}`;
+  chipRing.textContent = `RING ${player.ringCount}  /  COMBO ${player.combo}`;
+}
+
+// ---------- リング ----------
+function spawnRingBurst(){
+  const count = 3 + Math.floor(Math.random()*3); // 3〜5個
+  for(let i=0;i<count;i++){
+    const ang = -Math.PI/2 + (Math.random()-0.5)*1.0;
+    const dist = 30 + Math.random()*70;
+    world.rings.push({
+      x: player.x + Math.cos(ang)*dist,
+      y: player.y + player.h*0.5 + Math.sin(ang)*dist,
+      t: performance.now()
+    });
+  }
+}
+function findNearestRingIndex(x,y, radius){
+  let k = -1, best = radius*radius;
+  for(let i=0;i<world.rings.length;i++){
+    const r = world.rings[i];
+    const dx = r.x-x, dy=r.y-y;
+    const d2 = dx*dx+dy*dy;
+    if(d2 < best){ best = d2; k=i; }
+  }
+  return k;
+}
+
+// ---------- 描画 ----------
+function draw(){
+  cx.setTransform(1,0,0,1,0,0);
+  cx.clearRect(0,0,cv.width,cv.height);
+
+  // カメラ（プレイヤー中心、ズーム対応）
+  const zoom = (state.phase==='goal') ? (world.zoom||1) : 1;
+  const camX = Math.max(0, Math.min(player.x - CANVAS_W/2/zoom, world.width - CANVAS_W/zoom));
+  const camY = 0;
+  cx.scale(zoom, zoom);
+  cx.translate(-camX, -camY);
+
+  // 背景
+  if(assets.stage){
+    // ステージ画像をそのまま等倍で描画（縦はキャンバスと揃える）
+    const scaleY = CANVAS_H / assets.stage.height;
+    const scaledW = assets.stage.width * scaleY;
+    cx.drawImage(assets.stage, 0, 0, scaledW, CANVAS_H);
+  }else{
+    cx.fillStyle='#223'; cx.fillRect(0,0,world.width, CANVAS_H);
+  }
+
+  // 地面ライン（デバッグ用）
+  // cx.strokeStyle = '#ff2a'; cx.beginPath(); cx.moveTo(0, world.groundY); cx.lineTo(world.width, world.groundY); cx.stroke();
+
+  // レール（障害物）
+  for(const r of world.rails){
+    if(assets.rail){
+      cx.drawImage(assets.rail, r.x, r.y, r.w, r.h);
+    }else{
+      cx.fillStyle='#999'; cx.fillRect(r.x, r.y, r.w, r.h);
+    }
+  }
+
+  // リング
+  for(const r of world.rings){
+    const life = Math.max(0, 1 - (performance.now()-r.t)/1600);
+    if(life<=0) continue;
+    const s = 28*(0.7+0.3*life);
+    cx.globalAlpha = 0.6 + 0.4*life;
+    if(assets.ring) cx.drawImage(assets.ring, r.x - s/2, r.y - s/2, s, s);
+    else{ cx.fillStyle='gold'; cx.beginPath(); cx.arc(r.x, r.y, s/2, 0, Math.PI*2); cx.fill(); }
+    cx.globalAlpha = 1;
+  }
+
+  // プレイヤー（ボード→本体の順に重ねる）
+  const px = player.x - 30, py = player.y;
+  if(assets.board){
+    cx.drawImage(assets.board, px, py + player.h - 22, 120, 28);
+  }else{
+    cx.fillStyle='#c33'; cx.fillRect(px, py + player.h - 22, 120, 28);
+  }
+  if(assets.mobs){
+    cx.drawImage(assets.mobs, px-6, py, 128, 128);
+  }else{
+    cx.fillStyle='#4cf'; cx.fillRect(px-6, py, 64, 84);
+  }
+}
+
+// ---------- リザルト ----------
+function showResult(){
+  state.phase = 'result';
+  state.resultTimeMs = performance.now() - state.startedAt;
+  const t = (state.resultTimeMs/1000);
+  const score = calcScore(t, player.ringCount, player.bestCombo);
+  const rank = calcRank(score);
+  rsTime.textContent  = `Time: ${t.toFixed(2)} s`;
+  rsRing.textContent  = `Rings: ${player.ringCount}`;
+  rsCombo.textContent = `Best Combo: ${player.bestCombo}`;
+  rsScore.textContent = `Score: ${score}`;
+  rsRank.textContent  = rank;
+  resultUI.style.display = 'grid';
+}
+
+// ---------- リスタート ----------
+function restart(){
+  resultUI.style.display = 'none';
+  state.phase = 'play';
+  world.zoom = 1;
+  player.x = 120;
+  player.y = world.groundY - player.h;
+  player.vx = player.vy = 0;
+  player.speed = 0;
+  player.ringBoost = 0;
+  player.ringCount = 0;
+  player.combo = 0;
+  player.bestCombo = 0;
+  world.rings.length = 0;
+  state.startedAt = performance.now();
+}
+</script>
+</body>
+</html>
