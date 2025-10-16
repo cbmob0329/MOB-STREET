@@ -1,50 +1,53 @@
-<!DOCTYPE html>
-<html lang="ja">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
-<title>MOB SKATE – v2</title>
-<meta name="theme-color" content="#0b0c10" />
-<link rel="preload" as="image" href="msst1.png">
-<link rel="preload" as="image" href="mobs.png">
-<link rel="preload" as="image" href="redsk.png">
-<link rel="preload" as="image" href="gardw.png">
-<link rel="preload" as="image" href="ringtap.png">
-<link rel="stylesheet" href="style.css" />
-</head>
-<body>
-  <div id="wrap">
-    <canvas id="game" width="540" height="960"></canvas>
+:root{
+  --hud-bg:#0b0f17cc;
+  --fg:#e9eef7;
+  --accent:#ffce3a;
+  --accent2:#35e5a1;
+}
+*{ -webkit-tap-highlight-color:transparent; }
+html,body{
+  height:100%; margin:0; background:#000; color:var(--fg);
+  overscroll-behavior:none; touch-action:none;
+}
+body{
+  display:grid; grid-template-rows:1fr auto; gap:8px;
+  padding:env(safe-area-inset-top) env(safe-area-inset-right)
+          calc(env(safe-area-inset-bottom) + 0px) env(safe-area-inset-left);
+}
+#wrap{ position:relative; max-width:900px; margin:0 auto; aspect-ratio:9/16; width:100%; }
+canvas{ width:100%; height:100%; display:block; background:#000;
+  border-radius:14px; box-shadow:0 8px 30px #0008; }
 
-    <div class="hud" aria-hidden="true">
-      <div class="row">
-        <div class="chip" id="chipTime">TIME 0.00</div>
-        <div class="chip" id="chipSpeed">SPD 0</div>
-        <div class="chip" id="chipRing">RING 0  /  COMBO 0</div>
-      </div>
+.hud{ position:absolute; inset:0; pointer-events:none;
+  font-family:system-ui, -apple-system, Segoe UI, Roboto, "Hiragino Kaku Gothic ProN", Meiryo, sans-serif; }
+.row{ position:absolute; left:10px; right:10px; top:10px; display:flex; gap:8px; justify-content:space-between; }
+.chip{ background:var(--hud-bg); backdrop-filter:blur(8px);
+  padding:8px 12px; border-radius:12px; font-weight:800; font-size:14px; line-height:1; display:flex; align-items:center; gap:8px; }
+.ver{ position:absolute; right:12px; bottom:12px; background:#0008; padding:5px 9px; border-radius:8px; font-size:12px; pointer-events:none; }
 
-      <div class="ctrl">
-        <button id="btnBrake" class="btn" type="button" aria-label="Brake">ブレーキ</button>
-        <button id="btnJump" class="btn" type="button" aria-label="Jump">ジャンプ</button>
-      </div>
+.ctrl{
+  position:absolute; left:0; right:0; bottom:12px;
+  display:flex; justify-content:space-between; align-items:flex-end;
+  gap:16px; pointer-events:auto; padding:0 14px;
+}
+.btn{
+  width:44vw; max-width:360px; min-height:64px;
+  border-radius:18px; border:none; font-weight:1000; letter-spacing:.04em;
+  font-size:20px; color:#0b0c10; box-shadow:0 10px 24px #000a;
+}
+.btn:active{ transform:translateY(2px); }
+.btn-accel{ background:var(--accent2); }
+.btn-jump { background:var(--accent); }
 
-      <div class="tapHint" id="tapHint"></div>
-      <div class="ver">v2</div>
+@media (min-width:700px){
+  .btn{ min-height:68px; font-size:22px; width:40%; }
+}
 
-      <div class="result" id="result">
-        <div class="card">
-          <p class="title">STAGE CLEAR!</p>
-          <p class="stat" id="rsTime"></p>
-          <p class="stat" id="rsRing"></p>
-          <p class="stat" id="rsCombo"></p>
-          <p class="stat" id="rsScore"></p>
-          <p class="rank" id="rsRank"></p>
-          <p class="tip">画面タップでリスタート</p>
-        </div>
-      </div>
-    </div>
-  </div>
+.result{ position:absolute; inset:0; background:#000000c0; display:none; place-items:center; text-align:center; }
+.card{ background:var(--hud-bg); backdrop-filter:blur(12px); padding:22px; border-radius:18px; min-width:60%; }
+.title{ font-size:26px; font-weight:900; margin:0 0 6px; }
+.stat{ font-size:16px; margin:6px 0; }
+.rank{ font-size:50px; font-weight:900; margin-top:6px; }
+.tip{ font-size:12px; opacity:.85; margin-top:10px; }
 
-<script src="game.js"></script>
-</body>
-</html>
+.tapHint{ position:absolute; left:0; right:0; bottom:96px; text-align:center; font-weight:800; color:#fff9; text-shadow:0 2px 8px #000; }
