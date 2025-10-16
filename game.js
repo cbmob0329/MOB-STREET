@@ -1,32 +1,34 @@
 /* =========================
-   MOB SKATE – Prototype v2 (split)
-   必要画像：msst1.png / mobs.png / redsk.png / gardw.png / ringtap.png
+   MOB SKATE – v3 (mobile-optimized)
    変更点：
-   - キャラ縮小＆ボードに正しく乗る
-   - ガードレール大型化＆上に乗れる／側面衝突で減速
-   - 移動パラメータ調整でクリアまで約3倍の所要時間
+   - UIを「ジャンプ / アクセル」の2ボタン
+   - カメラを引き（PLAY時0.82x）、GOAL時だけズーム
+   - レール上のリングは「前方のみ」に生成
    ========================= */
 
 // ---------- 基本設定 ----------
-const CANVAS_W = 540, CANVAS_H = 960;     // 9:16
-const GROUND_Y_RATIO = 0.865;             // 赤ライン相当（必要時微調整）
+const CANVAS_W = 540, CANVAS_H = 960;      // 9:16
+const GROUND_Y_RATIO = 0.865;              // ステージ赤ライン相当
 
-// 速度・挙動
+// 進行・挙動
 const GRAVITY = 0.7;
-const JUMP_VY = -16;                      // v1より控えめ
-const BASE_ACCEL = 0.02;                  // v1:0.06 → ゆっくり加速
+const JUMP_VY = -16;
+const BASE_ACCEL = 0.02;                   // 自動前進の基本加速
+const ACCEL_FORCE = 0.08;                  // アクセル押下中の追加加速
 const FRICTION = 0.008;
-const MAX_SPEED = 9;                      // v1:13 → ゆっくり
-const BRAKE_FORCE = 0.20;
+const MAX_SPEED = 9.2;
 
-// リング
-const RING_BOOST_PER = 0.03;              // +3%
-const RING_BOOST_DECAY = 0.012;           // 減衰やや緩く
-const RING_SPAWN_INTERVAL = 140;          // ms
-const RING_AROUND = 110;
+// リング（前方出現・ブースト）
+const RING_BOOST_PER = 0.03;               // +3%
+const RING_BOOST_DECAY = 0.012;
+const RING_SPAWN_INTERVAL = 130;           // ms
+const RING_FRONT_MIN = 60;                 // プレイヤーの前に出す最小距離
+const RING_FRONT_MAX = 160;                // 前方最大距離
+const RING_Y_SWAY    = 50;                 // 上下ゆらぎ
 
-// ゴール演出
-const GOAL_ZOOM = 1.6;
+// カメラ
+const CAMERA_PLAY_ZOOM = 0.82;             // ← これで引き
+const GOAL_ZOOM = 1.35;                    // ゴール時に寄る
 
 // スコア式
 function calcScore(sec, ring, bestCombo){
@@ -41,8 +43,13 @@ function calcRank(score){
 
 // ---------- キャンバス ----------
 const cv = document.getElementById('game');
-const cx = cv.getContext('2d');
+const cx = cv.getContext('2d', { alpha: true });
 cv.width = CANVAS_W; cv.height = CANVAS_H;
+
+// スクロール抑止
+document.addEventListener('gesturestart', e=>e.preventDefault());
+document.addEventListener('touchmove', e=>e.preventDefault(), {passive:false});
+document.addEventListener('contextmenu', e=>e.preventDefault());
 
 // ---------- HUD ----------
 const chipTime = document.getElementById('chipTime');
@@ -56,19 +63,20 @@ const rsScore = document.getElementById('rsScore');
 const rsRank = document.getElementById('rsRank');
 const tapHint = document.getElementById('tapHint');
 
-// ---------- 入力 ----------
-const input = { jump:false, brake:false, anyTap:false };
+// ---------- 入力（2ボタン＋どこでもタップ） ----------
+const input = { jump:false, accel:false, anyTap:false };
 document.getElementById('btnJump').addEventListener('pointerdown', ()=>input.jump=true);
 document.getElementById('btnJump').addEventListener('pointerup',   ()=>input.jump=false);
-document.getElementById('btnBrake').addEventListener('pointerdown',()=>input.brake=true);
-document.getElementById('btnBrake').addEventListener('pointerup',  ()=>input.brake=false);
+document.getElementById('btnAccel').addEventListener('pointerdown',()=>input.accel=true);
+document.getElementById('btnAccel').addEventListener('pointerup',  ()=>input.accel=false);
+
 addEventListener('pointerdown', e=>{
   input.anyTap = true;
   if(state.phase==='result'){ restart(); }
 });
 addEventListener('pointerup', ()=> input.anyTap=false);
 
-// ---------- 画像読み込み ----------
+// ---------- 画像 ----------
 function loadImage(src){
   return new Promise(res=>{
     const img = new Image(); img.src = src;
@@ -80,22 +88,18 @@ const assets = { stage:null, mobs:null, board:null, rail:null, ring:null };
 
 // ---------- ワールド ----------
 const world = {
-  x:0, y:0, zoom:1,
+  zoom:1,
   groundY: Math.floor(CANVAS_H * GROUND_Y_RATIO),
   width: 4000,
   rails: [],
   rings: []
 };
 
-// プレイヤー見た目・判定サイズ
-const PLAYER_W = 48;
-const PLAYER_H = 72;
-const BOARD_W  = 96;
-const BOARD_H  = 24;
-const SPRITE_W = 92;   // mobs.png の描画サイズ
-const SPRITE_H = 92;
-const SPRITE_OFF_X = -10; // 画像の見た目調整（足がボードに重なるように）
-const SPRITE_OFF_Y = -18;
+// 見た目・判定サイズ
+const PLAYER_W = 48, PLAYER_H = 72;
+const BOARD_W = 96, BOARD_H = 24;
+const SPRITE_W = 92, SPRITE_H = 92;
+const SPRITE_OFF_X = -10, SPRITE_OFF_Y = -18;
 
 const player = {
   x: 100, y: 0, w: PLAYER_W, h: PLAYER_H,
@@ -119,26 +123,22 @@ const state = {
   assets.ring  = await loadImage('ringtap.png');
 
   if(assets.stage){
-    // ステージをキャンバス高に合わせて等比拡大描画する想定。
     const scaleY = CANVAS_H / assets.stage.height;
-    const scaledW = Math.floor((assets.stage.width) * scaleY);
+    const scaledW = Math.floor(assets.stage.width * scaleY);
     world.width = scaledW;
-    state.goalX = world.width - 200; // 右端手前
+    state.goalX = world.width - 200;
   }
 
   world.groundY = Math.floor(CANVAS_H * GROUND_Y_RATIO);
 
-  // 大きめのガードレールを配置（障害物として成立）
-  // 上に乗れる高さ・幅：w=420, h=36
-  const gap = 620;
+  // 大型ガードレール（上に乗れる＆側面で減速）
+  const gap = 640;
   for(let i=0;i<6;i++){
-    const x = 520 + i*gap;
-    world.rails.push({ x, y: world.groundY - 30, w: 420, h: 36 });
+    const x = 560 + i*gap;
+    world.rails.push({ x, y: world.groundY - 30, w: 440, h: 36 });
   }
 
-  // プレイヤー初期位置
   player.y = world.groundY - player.h;
-
   loop();
 })();
 
@@ -157,9 +157,9 @@ function update(dt){
   if(state.phase === 'play'){
     player.prevX = player.x;
 
-    // 自動前進
+    // 進行
     player.speed += BASE_ACCEL;
-    if(input.brake) player.speed -= BRAKE_FORCE;
+    if(input.accel) player.speed += ACCEL_FORCE;  // アクセルで押してる間だけ強く加速
     player.speed = Math.max(0, Math.min(MAX_SPEED*(1+player.ringBoost), player.speed));
 
     // ジャンプ
@@ -168,7 +168,7 @@ function update(dt){
       player.onGround = false;
     }
 
-    // 重力＆摩擦
+    // 重力・摩擦
     player.vy += GRAVITY;
     if(player.onGround && !player.onRail){
       player.speed = Math.max(0, player.speed - FRICTION*player.speed);
@@ -184,32 +184,31 @@ function update(dt){
       player.y = floorY; player.vy = 0; player.onGround = true;
     }
 
-    // レール処理
+    // レール
     player.onRail = false;
     for(const r of world.rails){
-      // 上面着地（下向きに落ちてきた時だけ）
+      // 上面
       const topY = r.y - player.h;
       const horizontallyOver = (player.x + player.w*0.5 > r.x) && (player.x - player.w*0.5 < r.x + r.w);
       const falling = player.vy >= 0;
       if(horizontallyOver && falling && player.y >= topY - 12 && player.y <= topY + 16){
         player.y = topY; player.vy = 0; player.onGround = true; player.onRail = true;
       }
-
-      // 側面衝突（正面からぶつかったら減速＆押し戻し）
+      // 側面（左）
       const verticalOverlap = (player.y + player.h > r.y) && (player.y < r.y + r.h);
       const hitFromLeft = (player.prevX + player.w*0.5) <= r.x && (player.x + player.w*0.5) > r.x;
       if(verticalOverlap && hitFromLeft){
         player.x = r.x - player.w*0.5 - 1;
-        player.speed *= 0.35; // 強めに減速
+        player.speed *= 0.35;
       }
     }
 
-    // リング生成（レール上のみ）
+    // リング生成：レール上のみ、かつ前方に出す
     if(player.onRail){
       ringSpawnTimer += dt;
       if(ringSpawnTimer >= RING_SPAWN_INTERVAL){
         ringSpawnTimer = 0;
-        spawnRingBurst();
+        spawnRingsForward();
       }
       tapHint.textContent = "リングをタップで加速！";
     }else{
@@ -219,14 +218,14 @@ function update(dt){
 
     // タップで近傍リング消費→ブースト
     if(input.anyTap){
-      const idx = findNearestRingIndex(player.x, player.y, RING_AROUND);
+      const idx = findNearestRingIndex(player.x, player.y, 110);
       if(idx >= 0){
         world.rings.splice(idx,1);
         player.ringCount++;
         player.combo++;
         player.bestCombo = Math.max(player.bestCombo, player.combo);
         player.ringBoost += RING_BOOST_PER;
-        input.anyTap = false; // 1入力で1個
+        input.anyTap = false;
       }
     }
 
@@ -243,14 +242,14 @@ function update(dt){
   }
   else if(state.phase === 'goal'){
     if(player.zooming){
-      world.zoom = Math.min(GOAL_ZOOM, (world.zoom||1)+0.02);
+      world.zoom = Math.min(GOAL_ZOOM, (world.zoom||CAMERA_PLAY_ZOOM)+0.02);
       player.hopT += 0.15;
       if(player.onGround){
-        player.y = (world.groundY - player.h) + Math.sin(player.hopT)*-10; // ピョンピョン
+        player.y = (world.groundY - player.h) + Math.sin(player.hopT)*-10;
       }
       if(world.zoom >= GOAL_ZOOM){
         player.zooming = false;
-        setTimeout(showResult, 400);
+        setTimeout(showResult, 380);
       }
     }
   }
@@ -262,15 +261,15 @@ function update(dt){
   chipRing.textContent = `RING ${player.ringCount}  /  COMBO ${player.combo}`;
 }
 
-// ---------- リング ----------
-function spawnRingBurst(){
-  const count = 4 + Math.floor(Math.random()*3); // 4〜6個
-  for(let i=0;i<count;i++){
-    const ang = -Math.PI/2 + (Math.random()-0.5)*1.1;
-    const dist = 34 + Math.random()*70;
+// ---------- リング（前方生成） ----------
+function spawnRingsForward(){
+  const n = 4 + Math.floor(Math.random()*3); // 4〜6個
+  for(let i=0;i<n;i++){
+    const ahead = RING_FRONT_MIN + Math.random()*(RING_FRONT_MAX - RING_FRONT_MIN);
+    const vy = (Math.random()*2-1) * RING_Y_SWAY;
     world.rings.push({
-      x: player.x + Math.cos(ang)*dist,
-      y: player.y + player.h*0.45 + Math.sin(ang)*dist,
+      x: player.x + ahead + i*18,                    // しっかり前に並ぶ
+      y: player.y + player.h*0.45 + vy,
       t: performance.now()
     });
   }
@@ -291,15 +290,14 @@ function draw(){
   cx.setTransform(1,0,0,1,0,0);
   cx.clearRect(0,0,cv.width,cv.height);
 
-  // カメラ（ズーム含む）
-  const zoom = (state.phase==='goal') ? (world.zoom||1) : 1;
-  const camX = Math.max(0, Math.min(player.x - CANVAS_W/2/zoom, world.width - CANVAS_W/zoom));
-  cx.scale(zoom, 1*zoom);
+  // カメラ（プレイ時は引き、ゴール時に寄る）
+  const baseZoom = (state.phase==='goal') ? (world.zoom||GOAL_ZOOM) : CAMERA_PLAY_ZOOM;
+  const camX = Math.max(0, Math.min(player.x - CANVAS_W/2/baseZoom, world.width - CANVAS_W/baseZoom));
+  cx.scale(baseZoom, baseZoom);
   cx.translate(-camX, 0);
 
   // 背景
   if(assets.stage){
-    // キャンバス高さ基準で横にフィットさせる
     const scaleY = CANVAS_H / assets.stage.height;
     const scaledW = Math.floor(assets.stage.width * scaleY);
     cx.drawImage(assets.stage, 0, 0, scaledW, CANVAS_H);
@@ -333,7 +331,7 @@ function draw(){
 
   if(assets.board){
     const bx = px + (player.w - BOARD_W)/2;
-    const by = py + player.h - BOARD_H + 2; // 足元ぴったり
+    const by = py + player.h - BOARD_H + 2;
     cx.drawImage(assets.board, bx, by, BOARD_W, BOARD_H);
   }else{
     cx.fillStyle='#c33'; cx.fillRect(px, py + player.h - BOARD_H, BOARD_W, BOARD_H);
@@ -367,7 +365,7 @@ function showResult(){
 function restart(){
   resultUI.style.display = 'none';
   state.phase = 'play';
-  world.zoom = 1;
+  world.zoom = CAMERA_PLAY_ZOOM;
   player.x = 100;
   player.y = world.groundY - player.h;
   player.vy = 0;
