@@ -1,53 +1,101 @@
 :root{
-  --hud-bg:#0b0f17cc;
-  --fg:#e9eef7;
-  --accent:#ffce3a;
-  --accent2:#35e5a1;
+  --bg:#0b0f14;
+  --panel:rgba(10,14,20,0.55);
+  --text:#e9eef6;
+  --muted:#a9b4c3;
+  --stroke:rgba(255,255,255,0.12);
+  --btn:#141b24;
+  --btn2:#1a2330;
+  --btn3:#2a0f14;
+  --shadow:0 10px 30px rgba(0,0,0,0.35);
 }
-*{ -webkit-tap-highlight-color:transparent; }
-html,body{
-  height:100%; margin:0; background:#000; color:var(--fg);
-  overscroll-behavior:none; touch-action:none;
-}
-body{
-  display:grid; grid-template-rows:1fr auto; gap:8px;
-  padding:env(safe-area-inset-top) env(safe-area-inset-right)
-          calc(env(safe-area-inset-bottom) + 0px) env(safe-area-inset-left);
-}
-#wrap{ position:relative; max-width:900px; margin:0 auto; aspect-ratio:9/16; width:100%; }
-canvas{ width:100%; height:100%; display:block; background:#000;
-  border-radius:14px; box-shadow:0 8px 30px #0008; }
 
-.hud{ position:absolute; inset:0; pointer-events:none;
-  font-family:system-ui, -apple-system, Segoe UI, Roboto, "Hiragino Kaku Gothic ProN", Meiryo, sans-serif; }
-.row{ position:absolute; left:10px; right:10px; top:10px; display:flex; gap:8px; justify-content:space-between; }
-.chip{ background:var(--hud-bg); backdrop-filter:blur(8px);
-  padding:8px 12px; border-radius:12px; font-weight:800; font-size:14px; line-height:1; display:flex; align-items:center; gap:8px; }
-.ver{ position:absolute; right:12px; bottom:12px; background:#0008; padding:5px 9px; border-radius:8px; font-size:12px; pointer-events:none; }
+*{ box-sizing:border-box; -webkit-tap-highlight-color: transparent; }
+html,body{ height:100%; margin:0; background:var(--bg); color:var(--text); font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Noto Sans JP", "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif; }
+body{ overscroll-behavior: none; }
 
-.ctrl{
-  position:absolute; left:0; right:0; bottom:12px;
-  display:flex; justify-content:space-between; align-items:flex-end;
-  gap:16px; pointer-events:auto; padding:0 14px;
+#app{
+  height:100%;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
 }
+
+#game{
+  width:min(100vw, 62.5vh); /* 縦画面想定：横幅を抑える */
+  height:auto;
+  border-radius:18px;
+  box-shadow: var(--shadow);
+  background:#05080c; /* 背景無しでも黒系 */
+  display:block;
+}
+
+#hud{
+  position:fixed;
+  left:0; right:0;
+  top:0; bottom:0;
+  pointer-events:none;
+}
+
+#boostHud{
+  position:fixed;
+  left:14px;
+  top:14px;
+  padding:10px 12px;
+  background:var(--panel);
+  border:1px solid var(--stroke);
+  border-radius:14px;
+  box-shadow: var(--shadow);
+  pointer-events:none;
+  backdrop-filter: blur(6px);
+}
+
+#boostHud .label{
+  font-weight:700;
+  letter-spacing:0.08em;
+  font-size:12px;
+  color:var(--muted);
+  margin-bottom:6px;
+}
+
+.pips{
+  display:flex;
+  gap:6px;
+  margin-bottom:6px;
+}
+.pip{
+  width:12px; height:12px;
+  border-radius:999px;
+  background:rgba(255,255,255,0.14);
+  border:1px solid rgba(255,255,255,0.12);
+}
+.pip.on{
+  background:rgba(255,255,255,0.85);
+}
+
+.timer{
+  font-size:12px;
+  color:var(--muted);
+  white-space:nowrap;
+}
+
+#buttons{
+  position:fixed;
+  left:0; right:0;
+  bottom:14px;
+  display:flex;
+  gap:10px;
+  padding: 0 14px;
+  pointer-events:auto;
+}
+
 .btn{
-  width:44vw; max-width:360px; min-height:64px;
-  border-radius:18px; border:none; font-weight:1000; letter-spacing:.04em;
-  font-size:20px; color:#0b0c10; box-shadow:0 10px 24px #000a;
-}
-.btn:active{ transform:translateY(2px); }
-.btn-accel{ background:var(--accent2); }
-.btn-jump { background:var(--accent); }
-
-@media (min-width:700px){
-  .btn{ min-height:68px; font-size:22px; width:40%; }
-}
-
-.result{ position:absolute; inset:0; background:#000000c0; display:none; place-items:center; text-align:center; }
-.card{ background:var(--hud-bg); backdrop-filter:blur(12px); padding:22px; border-radius:18px; min-width:60%; }
-.title{ font-size:26px; font-weight:900; margin:0 0 6px; }
-.stat{ font-size:16px; margin:6px 0; }
-.rank{ font-size:50px; font-weight:900; margin-top:6px; }
-.tip{ font-size:12px; opacity:.85; margin-top:10px; }
-
-.tapHint{ position:absolute; left:0; right:0; bottom:96px; text-align:center; font-weight:800; color:#fff9; text-shadow:0 2px 8px #000; }
+  flex:1;
+  border:1px solid var(--stroke);
+  border-radius:18px;
+  padding:14px 10px;
+  font-size:18px;
+  font-weight:800;
+  color:var(--text);
+  back
