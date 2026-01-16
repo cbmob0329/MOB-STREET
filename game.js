@@ -1,344 +1,506 @@
+// game.js
 (() => {
   "use strict";
 
-  // ====== Canvas / DPR ======
-  const canvas = document.getElementById("game");
+  // ====== DOM ======
+  const canvas = document.getElementById("gameCanvas");
   const ctx = canvas.getContext("2d", { alpha: false });
 
-  const VIRTUAL_W = 720;
-  const VIRTUAL_H = 1280;
+  const overlay = document.getElementById("overlay");
+  const overlayTitle = document.getElementById("overlayTitle");
+  const overlayMsg = document.getElementById("overlayMsg");
 
-  function resizeCanvasToDPR() {
-    const dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
-    canvas.width = Math.round(VIRTUAL_W * dpr);
-    canvas.height = Math.round(VIRTUAL_H * dpr);
-    canvas.style.width = `${VIRTUAL_W}px`;
-    canvas.style.height = `${VIRTUAL_H}px`;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // draw in virtual pixels
-    ctx.imageSmoothingEnabled = false;      // ドット絵想定
-  }
+  const hudSpeed = document.getElementById("hudSpeed");
+  const hudDist = document.getElementById("hudDist");
+  const hudFps = document.getElementById("hudFps");
 
-  // ====== Assets ======
-  const assets = {
-    pl1: loadImage("PL1.png"),
-    pl2: loadImage("PL2.png"),
-    sk: loadImage("redsk.png"),
-    st: loadImage("st.png"),
-  };
-
-  function loadImage(src) {
-    const img = new Image();
-    img.src = src;
-    img.decoding = "async";
-    return img;
-  }
-
-  // ====== UI ======
   const btnJump = document.getElementById("btnJump");
   const btnBoost = document.getElementById("btnBoost");
   const btnJumpBoost = document.getElementById("btnJumpBoost");
-  const boostPips = [...document.querySelectorAll("#boostPips .pip")];
-  const boostTimerEl = document.getElementById("boostTimer");
 
-  // iOS Safariのダブルタップズーム等を抑止
-  document.addEventListener("gesturestart", (e) => e.preventDefault(), { passive: false });
+  const pips = Array.from(document.querySelectorAll(".pip"));
 
-  // ====== Game State ======
-  const world = {
-    t: 0,
-    dt: 0,
-    lastTs: 0,
-
-    // 地面（ステージ画像の上を走る：ここは当たり判定ラインのみ先に決める）
-    groundY: 980, // 画像に合わせて後で調整しやすい値
-    gravity: 2600,
-
-    // スクロール
-    scrollX: 0,
-
-    // 速度
-    baseSpeed: 420, // px/sec
-    speed: 420,
-    boostActive: false,
-    boostTimeLeft: 0,
-
-    // ブーストストック
-    boostStock: 0,
-    boostMax: 3,
-    stockInterval: 3.0,
-    stockTimer: 3.0,
+  // ====== Config ======
+  const CONFIG = {
+    // 表示・スケール
+    logicalW: 360,
+    logicalH: 640,
 
     // プレイヤー
-    player: {
-      x: 180,
-      y: 0,
-      vy: 0,
-      onGround: false,
-      jumpVel: -1050,
-      width: 0,
-      height: 0,
-      scale: 1.0,
-      // スケボー描画オフセット
-      boardYOffset: 18,
-    },
+    playerSize: 48,              // 見た目の基準
+    hitBoxScale: 0.92,           // 判定は少し甘くする
 
-    // 判定用：プレイヤーの「足元」
-    feetOffset: 10,
+    // 物理
+    gravity: 2200,               // px/s^2
+    jumpV1: 860,                 // 1段目
+    jumpV2: 780,                 // 2段目
+    jumpBoostV: 1280,            // ジャンプブースト（めっちゃ飛ぶ）
+    maxFallV: 1800,
+
+    // 走行
+    baseSpeed: 260,              // px/s
+    boostSpeedAdd: 210,          // BOOST 加速
+    boostDuration: 0.85,         // 1回押し
+    jumpBoostSpeedAdd: 520,      // 超ブースト加速
+    jumpBoostDuration: 1.25,     // 超ブースト時間
+
+    // ステージ
+    groundHeightRatio: 0.26,     // 下の地面帯（st.png）
+    stageParallax: 1.0,
+
+    // ゲージ
+    stockMax: 3,
+    stockRegenSec: 3.0,
+
+    // UI
+    safeTextShadow: true,
   };
 
-  // ====== Input handlers ======
-  function onJump() {
-    if (!world.player.onGround) return;
-    world.player.vy = world.player.jumpVel;
-    world.player.onGround = false;
+  // ====== Utilities ======
+  function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+  function nowMs() { return performance.now(); }
+
+  function setOverlay(title, msg) {
+    overlayTitle.textContent = title;
+    overlayMsg.textContent = msg;
+    overlay.classList.remove("hidden");
+  }
+  function hideOverlay() {
+    overlay.classList.add("hidden");
   }
 
-  function useBoostOne() {
-    if (world.boostStock <= 0) return false;
-    world.boostStock -= 1;
-    startBoost(1.55, 0.65); // 強さ, 秒数
-    return true;
-  }
+  // ====== Resize / DPR ======
+  function fitCanvas() {
+    const dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+    const rect = canvas.getBoundingClientRect();
 
-  function useJumpBoostAll() {
-    if (world.boostStock < world.boostMax) return false; // 3つ満タンのみ
-    world.boostStock = 0;
-    // ジャンプしながら超ブースト（地上でも空中でも可）
-    if (world.player.onGround) onJump();
-    startBoost(2.35, 1.15); // 強さ, 秒数
-    // 追加で上方向に少し強化（空中の伸び）
-    world.player.vy = Math.min(world.player.vy, world.player.jumpVel * 1.15);
-    return true;
-  }
+    const w = Math.max(1, Math.floor(rect.width * dpr));
+    const h = Math.max(1, Math.floor(rect.height * dpr));
 
-  function startBoost(mult, duration) {
-    world.boostActive = true;
-    world.boostTimeLeft = Math.max(world.boostTimeLeft, duration);
-    // boostは加算的に上書きせず「最大倍率」を採用
-    world.boostMult = Math.max(world.boostMult || 1, mult);
-  }
-
-  btnJump.addEventListener("pointerdown", (e) => { e.preventDefault(); onJump(); }, { passive: false });
-  btnBoost.addEventListener("pointerdown", (e) => { e.preventDefault(); useBoostOne(); }, { passive: false });
-  btnJumpBoost.addEventListener("pointerdown", (e) => { e.preventDefault(); useJumpBoostAll(); }, { passive: false });
-
-  // ====== Main Loop ======
-  function tick(ts) {
-    if (!world.lastTs) world.lastTs = ts;
-    world.dt = Math.min(1 / 30, (ts - world.lastTs) / 1000);
-    world.lastTs = ts;
-    world.t += world.dt;
-
-    update(world.dt);
-    render();
-
-    requestAnimationFrame(tick);
-  }
-
-  function update(dt) {
-    // ブーストストック（3秒で+1、最大3）
-    world.stockTimer -= dt;
-    if (world.stockTimer <= 0) {
-      const add = Math.floor((-world.stockTimer) / world.stockInterval) + 1;
-      world.boostStock = Math.min(world.boostMax, world.boostStock + add);
-      world.stockTimer += add * world.stockInterval;
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
     }
 
-    // ブースト
-    if (world.boostActive) {
-      world.boostTimeLeft -= dt;
-      if (world.boostTimeLeft <= 0) {
-        world.boostActive = false;
-        world.boostTimeLeft = 0;
-        world.boostMult = 1;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+
+    return { dpr, rect };
+  }
+
+  // ====== Assets ======
+  // ★ここがポイント：PL1/PL2 は拡張子が二重
+  const ASSETS = {
+    pl1: { src: "PL1.png.png", img: null },
+    pl2: { src: "PL2.png.png", img: null },
+    sk:  { src: "redsk.png",   img: null },
+    st:  { src: "st.png",      img: null },
+  };
+
+  function loadImage(src) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error(`Failed to load: ${src}`));
+      img.src = src;
+    });
+  }
+
+  async function loadAllAssets() {
+    setOverlay("Loading...", "画像を読み込んでいます");
+    const keys = Object.keys(ASSETS);
+
+    for (let i = 0; i < keys.length; i++) {
+      const k = keys[i];
+      const a = ASSETS[k];
+      setOverlay("Loading...", `${a.src} (${i + 1}/${keys.length})`);
+      a.img = await loadImage(a.src);
+    }
+    hideOverlay();
+  }
+
+  // ====== Input ======
+  const input = {
+    jumpQueued: false,
+    boostQueued: false,
+    jumpBoostQueued: false,
+  };
+
+  function attachButton(btn, onPress) {
+    const press = (e) => {
+      e.preventDefault();
+      onPress();
+    };
+    btn.addEventListener("pointerdown", press, { passive: false });
+    btn.addEventListener("pointerup", (e) => e.preventDefault(), { passive: false });
+    btn.addEventListener("pointercancel", (e) => e.preventDefault(), { passive: false });
+  }
+
+  attachButton(btnJump, () => { input.jumpQueued = true; });
+  attachButton(btnBoost, () => { input.boostQueued = true; });
+  attachButton(btnJumpBoost, () => { input.jumpBoostQueued = true; });
+
+  // PCデバッグ用
+  window.addEventListener("keydown", (e) => {
+    if (e.repeat) return;
+    const k = e.key.toLowerCase();
+    if (k === " " || k === "spacebar") input.jumpQueued = true;
+    if (k === "b") input.boostQueued = true;
+    if (k === "n") input.jumpBoostQueued = true;
+  });
+
+  // スクロール抑止
+  window.addEventListener("touchmove", (e) => e.preventDefault(), { passive: false });
+
+  // ====== Game State ======
+  const state = {
+    running: false,
+
+    dpr: 1,
+    rect: null,
+
+    lastMs: 0,
+    fpsAcc: 0,
+    fpsCnt: 0,
+    fps: 0,
+
+    scrollX: 0,
+    distance: 0,
+
+    stock: CONFIG.stockMax,
+    stockTimer: 0,
+
+    boostTimer: 0,
+    boostPower: 0,
+
+    player: {
+      x: 0,
+      y: 0,
+      vy: 0,
+      w: CONFIG.playerSize,
+      h: CONFIG.playerSize,
+      onGround: false,
+      jumpsUsed: 0, // 0/1/2
+    },
+  };
+
+  function resetGameLayout() {
+    if (!state.rect) return;
+
+    const cw = canvas.width;
+    const ch = canvas.height;
+
+    const sx = cw / CONFIG.logicalW;
+    const sy = ch / CONFIG.logicalH;
+    const s = Math.min(sx, sy);
+
+    state.view = {
+      s,
+      offsetX: Math.floor((cw - CONFIG.logicalW * s) / 2),
+      offsetY: Math.floor((ch - CONFIG.logicalH * s) / 2),
+    };
+
+    const groundH = CONFIG.logicalH * CONFIG.groundHeightRatio;
+    const groundTop = CONFIG.logicalH - groundH;
+
+    state.player.x = CONFIG.logicalW * 0.30;
+    state.player.y = groundTop - state.player.h;
+    state.player.vy = 0;
+    state.player.onGround = true;
+    state.player.jumpsUsed = 0;
+
+    state.scrollX = 0;
+    state.distance = 0;
+    state.stock = CONFIG.stockMax;
+    state.stockTimer = 0;
+    state.boostTimer = 0;
+    state.boostPower = 0;
+  }
+
+  // ====== Mechanics ======
+  function tryJump() {
+    const p = state.player;
+    if (p.onGround) {
+      p.vy = -CONFIG.jumpV1;
+      p.onGround = false;
+      p.jumpsUsed = 1;
+      return true;
+    }
+    // 2段ジャンプ
+    if (!p.onGround && p.jumpsUsed < 2) {
+      p.vy = -CONFIG.jumpV2;
+      p.jumpsUsed = 2;
+      return true;
+    }
+    return false;
+  }
+
+  function tryBoost() {
+    if (state.stock <= 0) return false;
+    state.stock -= 1;
+    state.boostTimer = CONFIG.boostDuration;
+    state.boostPower = CONFIG.boostSpeedAdd;
+    return true;
+  }
+
+  function tryJumpBoost() {
+    if (state.stock < 3) return false;
+
+    state.stock -= 3;
+
+    const p = state.player;
+    p.vy = -CONFIG.jumpBoostV;   // メッチャ飛ぶ
+    p.onGround = false;
+    p.jumpsUsed = 2;             // 追加ジャンプは抑制（安定）
+
+    state.boostTimer = CONFIG.jumpBoostDuration;
+    state.boostPower = CONFIG.jumpBoostSpeedAdd;
+    return true;
+  }
+
+  function regenStock(dt) {
+    state.stockTimer += dt;
+    while (state.stockTimer >= CONFIG.stockRegenSec) {
+      state.stockTimer -= CONFIG.stockRegenSec;
+      if (state.stock < CONFIG.stockMax) state.stock += 1;
+      else {
+        state.stockTimer = Math.min(state.stockTimer, CONFIG.stockRegenSec * 0.35);
+        break;
       }
-    } else {
-      world.boostMult = 1;
+    }
+  }
+
+  function currentSpeed() {
+    return CONFIG.baseSpeed + (state.boostTimer > 0 ? state.boostPower : 0);
+  }
+
+  // ====== Render ======
+  function beginLogical() {
+    const v = state.view;
+    ctx.setTransform(v.s, 0, 0, v.s, v.offsetX, v.offsetY);
+  }
+
+  function drawSky() {
+    const g = ctx.createLinearGradient(0, 0, 0, CONFIG.logicalH);
+    g.addColorStop(0, "#2a6fb8");
+    g.addColorStop(0.45, "#173e78");
+    g.addColorStop(1, "#081a2b");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, CONFIG.logicalW, CONFIG.logicalH);
+  }
+
+  function drawStage() {
+    const stImg = ASSETS.st.img;
+    const groundH = CONFIG.logicalH * CONFIG.groundHeightRatio;
+    const y = CONFIG.logicalH - groundH;
+
+    ctx.fillStyle = "rgba(0,0,0,0.22)";
+    ctx.fillRect(0, y, CONFIG.logicalW, groundH);
+
+    if (!stImg) return;
+
+    const tileH = Math.max(1, Math.floor(groundH));
+    const scale = tileH / stImg.height;
+    const tileW = Math.max(1, Math.floor(stImg.width * scale));
+
+    const scroll = state.scrollX * CONFIG.stageParallax;
+    let x = -((scroll % tileW) + tileW) % tileW;
+    x = -x;
+
+    for (let drawX = x; drawX < CONFIG.logicalW + tileW; drawX += tileW) {
+      ctx.drawImage(stImg, 0, 0, stImg.width, stImg.height, drawX, y, tileW, tileH);
     }
 
-    world.speed = world.baseSpeed * (world.boostMult || 1);
+    ctx.fillStyle = "rgba(255,255,255,0.10)";
+    ctx.fillRect(0, y, CONFIG.logicalW, 1);
+  }
 
-    // スクロール更新
-    world.scrollX += world.speed * dt;
+  function drawPlayer() {
+    const p = state.player;
 
-    // プレイヤー物理
-    const p = world.player;
-    p.vy += world.gravity * dt;
+    const plImg = (p.onGround ? ASSETS.pl1.img : ASSETS.pl2.img);
+    const skImg = ASSETS.sk.img;
+
+    const drawW = p.w;
+    const drawH = p.h;
+
+    const skW = drawW * 1.02;
+    const skH = drawH * 0.48;
+    const skX = p.x + (drawW - skW) * 0.5;
+    const skY = p.y + drawH - skH * 0.85;
+
+    const groundH = CONFIG.logicalH * CONFIG.groundHeightRatio;
+    const groundTop = CONFIG.logicalH - groundH;
+
+    // 影
+    const distToGround = clamp((groundTop - (p.y + p.h)), 0, 300);
+    const shadowAlpha = p.onGround ? 0.28 : clamp(0.25 - distToGround / 1200, 0.06, 0.20);
+    ctx.fillStyle = `rgba(0,0,0,${shadowAlpha})`;
+    ctx.beginPath();
+    ctx.ellipse(p.x + drawW / 2, groundTop + 6, (drawW * 0.72) / 2, 6, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // スケボー
+    if (skImg) ctx.drawImage(skImg, 0, 0, skImg.width, skImg.height, skX, skY, skW, skH);
+    else {
+      ctx.fillStyle = "#ff3333";
+      ctx.fillRect(skX, skY, skW, skH);
+    }
+
+    // キャラ
+    if (plImg) ctx.drawImage(plImg, 0, 0, plImg.width, plImg.height, p.x, p.y, drawW, drawH);
+    else {
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(p.x, p.y, drawW, drawH);
+    }
+
+    // ブーストエフェクト
+    if (state.boostTimer > 0) {
+      const intensity = clamp(state.boostPower / CONFIG.jumpBoostSpeedAdd, 0.25, 1.0);
+      ctx.save();
+      ctx.globalAlpha = clamp(0.25 + intensity * 0.35, 0.25, 0.65);
+      ctx.fillStyle = "#ffffff";
+      const tailCount = 4 + Math.floor(intensity * 4);
+      for (let i = 0; i < tailCount; i++) {
+        const w = 10 + i * 6;
+        const h = 2;
+        const tx = p.x - 8 - i * 10;
+        const ty = p.y + p.h * (0.35 + i * 0.08);
+        ctx.fillRect(tx, ty, w, h);
+      }
+      ctx.restore();
+    }
+  }
+
+  function drawUIHints() {
+    ctx.save();
+    ctx.font = "bold 12px system-ui";
+    ctx.fillStyle = "rgba(255,255,255,0.92)";
+    if (CONFIG.safeTextShadow) {
+      ctx.shadowColor = "rgba(0,0,0,0.35)";
+      ctx.shadowBlur = 8;
+      ctx.shadowOffsetY = 2;
+    }
+    ctx.fillText(`Speed: ${Math.round(currentSpeed())}`, 10, 20);
+    ctx.fillText(`Stock: ${state.stock}/3`, 10, 38);
+    ctx.restore();
+  }
+
+  function updateGaugeUI() {
+    for (let i = 0; i < pips.length; i++) {
+      if (i < state.stock) pips[i].classList.add("on");
+      else pips[i].classList.remove("on");
+    }
+    btnBoost.classList.toggle("disabled", state.stock <= 0);
+    btnJumpBoost.classList.toggle("disabled", state.stock < 3);
+  }
+
+  // ====== Loop ======
+  function step(ms) {
+    if (!state.running) return;
+
+    const dt = clamp((ms - state.lastMs) / 1000, 0, 0.033);
+    state.lastMs = ms;
+
+    // FPS
+    state.fpsAcc += dt;
+    state.fpsCnt += 1;
+    if (state.fpsAcc >= 0.5) {
+      state.fps = Math.round(state.fpsCnt / state.fpsAcc);
+      state.fpsAcc = 0;
+      state.fpsCnt = 0;
+      hudFps.textContent = String(state.fps);
+    }
+
+    regenStock(dt);
+
+    // 優先順位：JumpBoost > Boost > Jump
+    if (input.jumpBoostQueued) { input.jumpBoostQueued = false; tryJumpBoost(); }
+    if (input.boostQueued)     { input.boostQueued = false;     tryBoost(); }
+    if (input.jumpQueued)      { input.jumpQueued = false;      tryJump(); }
+
+    // boost timer
+    if (state.boostTimer > 0) {
+      state.boostTimer -= dt;
+      if (state.boostTimer <= 0) {
+        state.boostTimer = 0;
+        state.boostPower = 0;
+      }
+    }
+
+    // physics
+    const p = state.player;
+    p.vy += CONFIG.gravity * dt;
+    p.vy = clamp(p.vy, -99999, CONFIG.maxFallV);
     p.y += p.vy * dt;
 
-    // 地面判定
-    const footY = p.y + getPlayerDrawH() - world.feetOffset;
-    if (footY >= world.groundY) {
-      // 地面に着地
-      const desiredY = world.groundY - (getPlayerDrawH() - world.feetOffset);
-      p.y = desiredY;
+    const groundH = CONFIG.logicalH * CONFIG.groundHeightRatio;
+    const groundTop = CONFIG.logicalH - groundH;
+    if (p.y + p.h >= groundTop) {
+      p.y = groundTop - p.h;
       p.vy = 0;
-      p.onGround = true;
+      if (!p.onGround) {
+        p.onGround = true;
+        p.jumpsUsed = 0;
+      }
     } else {
       p.onGround = false;
     }
 
-    updateHUD();
+    // scroll
+    const spd = currentSpeed();
+    state.scrollX += spd * dt;
+    state.distance += spd * dt;
+
+    hudSpeed.textContent = String(Math.round(spd));
+    hudDist.textContent = String(Math.floor(state.distance));
+
+    updateGaugeUI();
+
+    render();
+    requestAnimationFrame(step);
   }
 
-  function updateHUD() {
-    // pips
-    for (let i = 0; i < boostPips.length; i++) {
-      boostPips[i].classList.toggle("on", i < world.boostStock);
-    }
-
-    // timer text
-    const next = Math.max(0, world.stockTimer);
-    if (world.boostStock >= world.boostMax) {
-      boostTimerEl.textContent = "MAX";
-    } else {
-      boostTimerEl.textContent = `+1 in ${next.toFixed(1)}s`;
-    }
-
-    // ボタン活性（視覚的に）
-    btnBoost.disabled = world.boostStock <= 0;
-    btnJumpBoost.disabled = world.boostStock < world.boostMax;
-    btnBoost.style.opacity = btnBoost.disabled ? "0.55" : "1";
-    btnJumpBoost.style.opacity = btnJumpBoost.disabled ? "0.55" : "1";
-  }
-
-  // ====== Render ======
   function render() {
-    // クリア（背景無し）
-    ctx.clearRect(0, 0, VIRTUAL_W, VIRTUAL_H);
+    const { rect } = fitCanvas();
+    state.rect = rect;
 
-    // ステージ（st.png）を横にループ表示
-    drawStageLoop();
+    if (!state.view) resetGameLayout();
 
-    // プレイヤー（板→キャラ）
+    // clear
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // logical draw
+    beginLogical();
+    drawSky();
+    drawStage();
     drawPlayer();
-
-    // デバッグ線（必要なら true）
-    const debug = false;
-    if (debug) {
-      ctx.save();
-      ctx.globalAlpha = 0.7;
-      ctx.beginPath();
-      ctx.moveTo(0, world.groundY);
-      ctx.lineTo(VIRTUAL_W, world.groundY);
-      ctx.strokeStyle = "#fff";
-      ctx.lineWidth = 2;
-      ctx.stroke();
-      ctx.restore();
-    }
-  }
-
-  function drawStageLoop() {
-    const img = assets.st;
-    if (!img.complete || img.naturalWidth === 0) {
-      // ロード中の代替
-      ctx.save();
-      ctx.fillStyle = "#0b111a";
-      ctx.fillRect(0, 0, VIRTUAL_W, VIRTUAL_H);
-      ctx.fillStyle = "rgba(255,255,255,0.75)";
-      ctx.font = "700 22px system-ui";
-      ctx.fillText("Loading st.png ...", 24, 48);
-      ctx.restore();
-      return;
-    }
-
-    // 表示サイズ（縦画面：下側に床として配置。画像比率は維持）
-    const targetW = VIRTUAL_W;
-    const scale = targetW / img.naturalWidth;
-    const drawW = img.naturalWidth * scale;
-    const drawH = img.naturalHeight * scale;
-
-    // 画像のどの高さをgroundYに合わせるか：基本は「画像の上辺が地面」ではなく、
-    // 画像の“走れるライン”に合わせたいので、ここは簡易的に画像の上端を少し上に置く。
-    // 必要なら stageTopY を微調整して、st.pngの床ラインに合わせてください。
-    const stageTopY = world.groundY - 140; // ここを調整すると「st.pngのどこを走るか」合わせやすい
-
-    // ループ
-    const loopW = drawW; // targetWと同じ
-    const offset = -((world.scrollX % loopW + loopW) % loopW);
-
-    // 横に3枚敷けば確実に埋まる
-    for (let i = -1; i <= 1; i++) {
-      ctx.drawImage(img, offset + i * loopW, stageTopY, drawW, drawH);
-    }
-  }
-
-  function drawPlayer() {
-    const p = world.player;
-    const plImg = (p.onGround ? assets.pl1 : assets.pl2);
-    const skImg = assets.sk;
-
-    const plReady = plImg.complete && plImg.naturalWidth > 0;
-    const skReady = skImg.complete && skImg.naturalWidth > 0;
-
-    const plW = getPlayerDrawW();
-    const plH = getPlayerDrawH();
-
-    // キャラの基準位置
-    const px = p.x;
-    const py = p.y;
-
-    // スケボー（足元）
-    if (skReady) {
-      const skScale = 0.9; // 板の大きさ調整
-      const skW = skImg.naturalWidth * skScale;
-      const skH = skImg.naturalHeight * skScale;
-
-      // キャラの足元近辺に配置
-      const skX = px + (plW * 0.5) - (skW * 0.5);
-      const skY = py + plH - skH + p.boardYOffset;
-
-      ctx.drawImage(skImg, skX, skY, skW, skH);
-    }
-
-    // キャラ
-    if (plReady) {
-      ctx.drawImage(plImg, px, py, plW, plH);
-    } else {
-      // 代替表示
-      ctx.save();
-      ctx.fillStyle = "rgba(255,255,255,0.75)";
-      ctx.fillRect(px, py, plW, plH);
-      ctx.fillStyle = "#000";
-      ctx.font = "700 18px system-ui";
-      ctx.fillText("Loading PL*.png", px + 10, py + 30);
-      ctx.restore();
-    }
-  }
-
-  function getPlayerDrawW() {
-    // 画像基準が不明なので、縦画面で自然に見える幅を固定
-    return 160;
-  }
-  function getPlayerDrawH() {
-    return 200;
+    drawUIHints();
   }
 
   // ====== Boot ======
-  function boot() {
-    resizeCanvasToDPR();
+  async function boot() {
+    try {
+      fitCanvas();
+      await loadAllAssets();
 
-    // 初期位置（地面に合わせて立たせる）
-    const p = world.player;
-    p.y = world.groundY - (getPlayerDrawH() - world.feetOffset);
-    p.vy = 0;
-    p.onGround = true;
-
-    // 初期ブースト設定
-    world.boostMult = 1;
-    world.stockTimer = world.stockInterval;
-
-    // 縦画面での見た目安定（CSS上は縮むが内部は仮想解像度）
-    // 画面回転に追従（必要なら）
-    window.addEventListener("resize", () => {
-      // 仮想解像度は固定、DPRのみ再設定
-      resizeCanvasToDPR();
-    });
-
-    updateHUD();
-    requestAnimationFrame(tick);
+      state.running = true;
+      state.lastMs = nowMs();
+      resetGameLayout();
+      updateGaugeUI();
+      requestAnimationFrame(step);
+    } catch (err) {
+      console.error(err);
+      setOverlay("Error", String(err?.message || err));
+    }
   }
 
-  // 画像読み込み失敗時もゲームは起動する（代替描画あり）
+  window.addEventListener("resize", () => {
+    fitCanvas();
+    resetGameLayout();
+  });
+
   boot();
 })();
