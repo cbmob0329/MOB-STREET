@@ -1,375 +1,344 @@
-/* =========================
-   MOB SKATE – v3 (mobile-optimized)
-   - スマホ最適化（2ボタン：ジャンプ/アクセル）
-   - カメラを引く（PLAY時0.82x）、GOALでズーム
-   - レール上のリングは前方のみ生成
-   ========================= */
+(() => {
+  "use strict";
 
-// ---------- 基本設定 ----------
-const CANVAS_W = 540, CANVAS_H = 960;      // 9:16
-const GROUND_Y_RATIO = 0.865;              // ステージ赤ライン相当
+  // ====== Canvas / DPR ======
+  const canvas = document.getElementById("game");
+  const ctx = canvas.getContext("2d", { alpha: false });
 
-// 進行・挙動
-const GRAVITY = 0.7;
-const JUMP_VY = -16;
-const BASE_ACCEL = 0.02;                   // 自動前進の基本加速
-const ACCEL_FORCE = 0.08;                  // アクセル押下中の追加加速
-const FRICTION = 0.008;
-const MAX_SPEED = 9.2;
+  const VIRTUAL_W = 720;
+  const VIRTUAL_H = 1280;
 
-// リング（前方出現・ブースト）
-const RING_BOOST_PER = 0.03;               // +3%
-const RING_BOOST_DECAY = 0.012;
-const RING_SPAWN_INTERVAL = 130;           // ms
-const RING_FRONT_MIN = 60;                 // プレイヤー前方最小距離
-const RING_FRONT_MAX = 160;                // プレイヤー前方最大距離
-const RING_Y_SWAY    = 50;                 // 上下ゆらぎ
-
-// カメラ
-const CAMERA_PLAY_ZOOM = 0.82;             // 引き
-const GOAL_ZOOM = 1.35;                    // ゴール時の寄り
-
-// スコア
-function calcScore(sec, ring, bestCombo){
-  return Math.floor(1000 + ring*10 + bestCombo*ring*2 - sec*5);
-}
-function calcRank(score){
-  if(score >= 2000) return "S";
-  if(score >= 1500) return "A";
-  if(score >= 1100) return "B";
-  return "C";
-}
-
-// ---------- キャンバス ----------
-const cv = document.getElementById('game');
-const cx = cv.getContext('2d', { alpha: true });
-cv.width = CANVAS_W; cv.height = CANVAS_H;
-
-// スクロール抑止
-document.addEventListener('gesturestart', e=>e.preventDefault());
-document.addEventListener('touchmove', e=>e.preventDefault(), {passive:false});
-document.addEventListener('contextmenu', e=>e.preventDefault());
-
-// ---------- HUD ----------
-const chipTime = document.getElementById('chipTime');
-const chipSpeed= document.getElementById('chipSpeed');
-const chipRing = document.getElementById('chipRing');
-const resultUI = document.getElementById('result');
-const rsTime = document.getElementById('rsTime');
-const rsRing = document.getElementById('rsRing');
-const rsCombo = document.getElementById('rsCombo');
-const rsScore = document.getElementById('rsScore');
-const rsRank = document.getElementById('rsRank');
-const tapHint = document.getElementById('tapHint');
-
-// ---------- 入力（2ボタン＋どこでもタップ） ----------
-const input = { jump:false, accel:false, anyTap:false };
-document.getElementById('btnJump').addEventListener('pointerdown', ()=>input.jump=true);
-document.getElementById('btnJump').addEventListener('pointerup',   ()=>input.jump=false);
-document.getElementById('btnAccel').addEventListener('pointerdown',()=>input.accel=true);
-document.getElementById('btnAccel').addEventListener('pointerup',  ()=>input.accel=false);
-addEventListener('pointerdown', e=>{
-  input.anyTap = true;
-  if(state.phase==='result'){ restart(); }
-});
-addEventListener('pointerup', ()=> input.anyTap=false);
-
-// ---------- 画像 ----------
-function loadImage(src){
-  return new Promise(res=>{
-    const img = new Image(); img.src = src;
-    img.onload = ()=>res(img);
-    img.onerror = ()=>{ console.warn('画像の読み込みに失敗:',src); res(null); }
-  });
-}
-const assets = { stage:null, mobs:null, board:null, rail:null, ring:null };
-
-// ---------- ワールド ----------
-const world = {
-  zoom:1,
-  groundY: Math.floor(CANVAS_H * GROUND_Y_RATIO),
-  width: 4000,
-  rails: [],
-  rings: []
-};
-
-// 見た目・判定サイズ
-const PLAYER_W = 48, PLAYER_H = 72;
-const BOARD_W = 96, BOARD_H = 24;
-const SPRITE_W = 92, SPRITE_H = 92;
-const SPRITE_OFF_X = -10, SPRITE_OFF_Y = -18;
-
-const player = {
-  x: 100, y: 0, w: PLAYER_W, h: PLAYER_H,
-  vy:0, speed:0, onGround:false, onRail:false,
-  ringBoost:0, ringCount:0, combo:0, bestCombo:0,
-  zooming:false, hopT:0, prevX:0
-};
-
-const state = {
-  startedAt: performance.now(),
-  phase: 'play',
-  goalX: 3200
-};
-
-// ---------- 初期化 ----------
-(async function init(){
-  assets.stage = await loadImage('msst1.png');
-  assets.mobs  = await loadImage('mobs.png');
-  assets.board = await loadImage('redsk.png');
-  assets.rail  = await loadImage('gardw.png');
-  assets.ring  = await loadImage('ringtap.png');
-
-  if(assets.stage){
-    const scaleY = CANVAS_H / assets.stage.height;
-    const scaledW = Math.floor(assets.stage.width * scaleY);
-    world.width = scaledW;
-    state.goalX = world.width - 200;
+  function resizeCanvasToDPR() {
+    const dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+    canvas.width = Math.round(VIRTUAL_W * dpr);
+    canvas.height = Math.round(VIRTUAL_H * dpr);
+    canvas.style.width = `${VIRTUAL_W}px`;
+    canvas.style.height = `${VIRTUAL_H}px`;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // draw in virtual pixels
+    ctx.imageSmoothingEnabled = false;      // ドット絵想定
   }
 
-  world.groundY = Math.floor(CANVAS_H * GROUND_Y_RATIO);
+  // ====== Assets ======
+  const assets = {
+    pl1: loadImage("PL1.png"),
+    pl2: loadImage("PL2.png"),
+    sk: loadImage("redsk.png"),
+    st: loadImage("st.png"),
+  };
 
-  // 大型ガードレール（上に乗れる＆側面で減速）
-  const gap = 640;
-  for(let i=0;i<6;i++){
-    const x = 560 + i*gap;
-    world.rails.push({ x, y: world.groundY - 30, w: 440, h: 36 });
+  function loadImage(src) {
+    const img = new Image();
+    img.src = src;
+    img.decoding = "async";
+    return img;
   }
 
-  player.y = world.groundY - player.h;
-  loop();
-})();
+  // ====== UI ======
+  const btnJump = document.getElementById("btnJump");
+  const btnBoost = document.getElementById("btnBoost");
+  const btnJumpBoost = document.getElementById("btnJumpBoost");
+  const boostPips = [...document.querySelectorAll("#boostPips .pip")];
+  const boostTimerEl = document.getElementById("boostTimer");
 
-// ---------- ループ ----------
-let last = performance.now();
-let ringSpawnTimer = 0;
-function loop(now = performance.now()){
-  const dt = Math.min(32, now - last); last = now;
-  update(dt);
-  draw();
-  requestAnimationFrame(loop);
-}
+  // iOS Safariのダブルタップズーム等を抑止
+  document.addEventListener("gesturestart", (e) => e.preventDefault(), { passive: false });
 
-// ---------- 更新 ----------
-function update(dt){
-  if(state.phase === 'play'){
-    player.prevX = player.x;
+  // ====== Game State ======
+  const world = {
+    t: 0,
+    dt: 0,
+    lastTs: 0,
 
-    // 進行
-    player.speed += BASE_ACCEL;
-    if(input.accel) player.speed += ACCEL_FORCE;  // アクセル押下で強加速
-    player.speed = Math.max(0, Math.min(MAX_SPEED*(1+player.ringBoost), player.speed));
+    // 地面（ステージ画像の上を走る：ここは当たり判定ラインのみ先に決める）
+    groundY: 980, // 画像に合わせて後で調整しやすい値
+    gravity: 2600,
 
-    // ジャンプ
-    if(input.jump && player.onGround){
-      player.vy = JUMP_VY;
-      player.onGround = false;
-    }
+    // スクロール
+    scrollX: 0,
 
-    // 重力・摩擦
-    player.vy += GRAVITY;
-    if(player.onGround && !player.onRail){
-      player.speed = Math.max(0, player.speed - FRICTION*player.speed);
-    }
+    // 速度
+    baseSpeed: 420, // px/sec
+    speed: 420,
+    boostActive: false,
+    boostTimeLeft: 0,
 
-    // 移動
-    player.x += player.speed;
-    player.y += player.vy;
+    // ブーストストック
+    boostStock: 0,
+    boostMax: 3,
+    stockInterval: 3.0,
+    stockTimer: 3.0,
 
-    // 地面
-    const floorY = world.groundY - player.h;
-    if(player.y >= floorY){
-      player.y = floorY; player.vy = 0; player.onGround = true;
-    }
+    // プレイヤー
+    player: {
+      x: 180,
+      y: 0,
+      vy: 0,
+      onGround: false,
+      jumpVel: -1050,
+      width: 0,
+      height: 0,
+      scale: 1.0,
+      // スケボー描画オフセット
+      boardYOffset: 18,
+    },
 
-    // レール：上面着地＆側面減速
-    player.onRail = false;
-    for(const r of world.rails){
-      const topY = r.y - player.h;
-      const horizontallyOver = (player.x + player.w*0.5 > r.x) && (player.x - player.w*0.5 < r.x + r.w);
-      const falling = player.vy >= 0;
-      if(horizontallyOver && falling && player.y >= topY - 12 && player.y <= topY + 16){
-        player.y = topY; player.vy = 0; player.onGround = true; player.onRail = true;
-      }
-      const verticalOverlap = (player.y + player.h > r.y) && (player.y < r.y + r.h);
-      const hitFromLeft = (player.prevX + player.w*0.5) <= r.x && (player.x + player.w*0.5) > r.x;
-      if(verticalOverlap && hitFromLeft){
-        player.x = r.x - player.w*0.5 - 1;
-        player.speed *= 0.35;
-      }
-    }
+    // 判定用：プレイヤーの「足元」
+    feetOffset: 10,
+  };
 
-    // リング生成：レール上のみ・前方のみ
-    if(player.onRail){
-      ringSpawnTimer += dt;
-      if(ringSpawnTimer >= RING_SPAWN_INTERVAL){
-        ringSpawnTimer = 0;
-        spawnRingsForward();
-      }
-      tapHint.textContent = "リングをタップで加速！";
-    }else{
-      tapHint.textContent = "";
-      ringSpawnTimer = Math.min(ringSpawnTimer, RING_SPAWN_INTERVAL);
-    }
-
-    // タップで近傍リング消費→ブースト
-    if(input.anyTap){
-      const idx = findNearestRingIndex(player.x, player.y, 110);
-      if(idx >= 0){
-        world.rings.splice(idx,1);
-        player.ringCount++;
-        player.combo++;
-        player.bestCombo = Math.max(player.bestCombo, player.combo);
-        player.ringBoost += RING_BOOST_PER;
-        input.anyTap = false;
-      }
-    }
-
-    // ブースト減衰
-    player.ringBoost = Math.max(0, player.ringBoost - RING_BOOST_DECAY*(dt/16.7));
-
-    // ゴール
-    if(player.x >= state.goalX){
-      state.phase = 'goal';
-      player.speed = 0;
-      player.vy = 0;
-      player.zooming = true;
-    }
+  // ====== Input handlers ======
+  function onJump() {
+    if (!world.player.onGround) return;
+    world.player.vy = world.player.jumpVel;
+    world.player.onGround = false;
   }
-  else if(state.phase === 'goal'){
-    if(player.zooming){
-      world.zoom = Math.min(GOAL_ZOOM, (world.zoom||CAMERA_PLAY_ZOOM)+0.02);
-      player.hopT += 0.15;
-      if(player.onGround){
-        player.y = (world.groundY - player.h) + Math.sin(player.hopT)*-10;
+
+  function useBoostOne() {
+    if (world.boostStock <= 0) return false;
+    world.boostStock -= 1;
+    startBoost(1.55, 0.65); // 強さ, 秒数
+    return true;
+  }
+
+  function useJumpBoostAll() {
+    if (world.boostStock < world.boostMax) return false; // 3つ満タンのみ
+    world.boostStock = 0;
+    // ジャンプしながら超ブースト（地上でも空中でも可）
+    if (world.player.onGround) onJump();
+    startBoost(2.35, 1.15); // 強さ, 秒数
+    // 追加で上方向に少し強化（空中の伸び）
+    world.player.vy = Math.min(world.player.vy, world.player.jumpVel * 1.15);
+    return true;
+  }
+
+  function startBoost(mult, duration) {
+    world.boostActive = true;
+    world.boostTimeLeft = Math.max(world.boostTimeLeft, duration);
+    // boostは加算的に上書きせず「最大倍率」を採用
+    world.boostMult = Math.max(world.boostMult || 1, mult);
+  }
+
+  btnJump.addEventListener("pointerdown", (e) => { e.preventDefault(); onJump(); }, { passive: false });
+  btnBoost.addEventListener("pointerdown", (e) => { e.preventDefault(); useBoostOne(); }, { passive: false });
+  btnJumpBoost.addEventListener("pointerdown", (e) => { e.preventDefault(); useJumpBoostAll(); }, { passive: false });
+
+  // ====== Main Loop ======
+  function tick(ts) {
+    if (!world.lastTs) world.lastTs = ts;
+    world.dt = Math.min(1 / 30, (ts - world.lastTs) / 1000);
+    world.lastTs = ts;
+    world.t += world.dt;
+
+    update(world.dt);
+    render();
+
+    requestAnimationFrame(tick);
+  }
+
+  function update(dt) {
+    // ブーストストック（3秒で+1、最大3）
+    world.stockTimer -= dt;
+    if (world.stockTimer <= 0) {
+      const add = Math.floor((-world.stockTimer) / world.stockInterval) + 1;
+      world.boostStock = Math.min(world.boostMax, world.boostStock + add);
+      world.stockTimer += add * world.stockInterval;
+    }
+
+    // ブースト
+    if (world.boostActive) {
+      world.boostTimeLeft -= dt;
+      if (world.boostTimeLeft <= 0) {
+        world.boostActive = false;
+        world.boostTimeLeft = 0;
+        world.boostMult = 1;
       }
-      if(world.zoom >= GOAL_ZOOM){
-        player.zooming = false;
-        setTimeout(showResult, 380);
-      }
+    } else {
+      world.boostMult = 1;
+    }
+
+    world.speed = world.baseSpeed * (world.boostMult || 1);
+
+    // スクロール更新
+    world.scrollX += world.speed * dt;
+
+    // プレイヤー物理
+    const p = world.player;
+    p.vy += world.gravity * dt;
+    p.y += p.vy * dt;
+
+    // 地面判定
+    const footY = p.y + getPlayerDrawH() - world.feetOffset;
+    if (footY >= world.groundY) {
+      // 地面に着地
+      const desiredY = world.groundY - (getPlayerDrawH() - world.feetOffset);
+      p.y = desiredY;
+      p.vy = 0;
+      p.onGround = true;
+    } else {
+      p.onGround = false;
+    }
+
+    updateHUD();
+  }
+
+  function updateHUD() {
+    // pips
+    for (let i = 0; i < boostPips.length; i++) {
+      boostPips[i].classList.toggle("on", i < world.boostStock);
+    }
+
+    // timer text
+    const next = Math.max(0, world.stockTimer);
+    if (world.boostStock >= world.boostMax) {
+      boostTimerEl.textContent = "MAX";
+    } else {
+      boostTimerEl.textContent = `+1 in ${next.toFixed(1)}s`;
+    }
+
+    // ボタン活性（視覚的に）
+    btnBoost.disabled = world.boostStock <= 0;
+    btnJumpBoost.disabled = world.boostStock < world.boostMax;
+    btnBoost.style.opacity = btnBoost.disabled ? "0.55" : "1";
+    btnJumpBoost.style.opacity = btnJumpBoost.disabled ? "0.55" : "1";
+  }
+
+  // ====== Render ======
+  function render() {
+    // クリア（背景無し）
+    ctx.clearRect(0, 0, VIRTUAL_W, VIRTUAL_H);
+
+    // ステージ（st.png）を横にループ表示
+    drawStageLoop();
+
+    // プレイヤー（板→キャラ）
+    drawPlayer();
+
+    // デバッグ線（必要なら true）
+    const debug = false;
+    if (debug) {
+      ctx.save();
+      ctx.globalAlpha = 0.7;
+      ctx.beginPath();
+      ctx.moveTo(0, world.groundY);
+      ctx.lineTo(VIRTUAL_W, world.groundY);
+      ctx.strokeStyle = "#fff";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.restore();
     }
   }
 
-  // HUD
-  const sec = ( (state.phase==='play') ? (performance.now()-state.startedAt) : (state.resultTimeMs||0) ) / 1000;
-  chipTime.textContent = `TIME ${sec.toFixed(2)}`;
-  chipSpeed.textContent= `SPD ${Math.round(player.speed*6)}`;
-  chipRing.textContent = `RING ${player.ringCount}  /  COMBO ${player.combo}`;
-}
+  function drawStageLoop() {
+    const img = assets.st;
+    if (!img.complete || img.naturalWidth === 0) {
+      // ロード中の代替
+      ctx.save();
+      ctx.fillStyle = "#0b111a";
+      ctx.fillRect(0, 0, VIRTUAL_W, VIRTUAL_H);
+      ctx.fillStyle = "rgba(255,255,255,0.75)";
+      ctx.font = "700 22px system-ui";
+      ctx.fillText("Loading st.png ...", 24, 48);
+      ctx.restore();
+      return;
+    }
 
-// ---------- リング（前方生成） ----------
-function spawnRingsForward(){
-  const n = 4 + Math.floor(Math.random()*3); // 4〜6個
-  for(let i=0;i<n;i++){
-    const ahead = RING_FRONT_MIN + Math.random()*(RING_FRONT_MAX - RING_FRONT_MIN);
-    const vy = (Math.random()*2-1) * RING_Y_SWAY;
-    world.rings.push({
-      x: player.x + ahead + i*18,       // しっかり“前”に並ぶ
-      y: player.y + player.h*0.45 + vy,
-      t: performance.now()
+    // 表示サイズ（縦画面：下側に床として配置。画像比率は維持）
+    const targetW = VIRTUAL_W;
+    const scale = targetW / img.naturalWidth;
+    const drawW = img.naturalWidth * scale;
+    const drawH = img.naturalHeight * scale;
+
+    // 画像のどの高さをgroundYに合わせるか：基本は「画像の上辺が地面」ではなく、
+    // 画像の“走れるライン”に合わせたいので、ここは簡易的に画像の上端を少し上に置く。
+    // 必要なら stageTopY を微調整して、st.pngの床ラインに合わせてください。
+    const stageTopY = world.groundY - 140; // ここを調整すると「st.pngのどこを走るか」合わせやすい
+
+    // ループ
+    const loopW = drawW; // targetWと同じ
+    const offset = -((world.scrollX % loopW + loopW) % loopW);
+
+    // 横に3枚敷けば確実に埋まる
+    for (let i = -1; i <= 1; i++) {
+      ctx.drawImage(img, offset + i * loopW, stageTopY, drawW, drawH);
+    }
+  }
+
+  function drawPlayer() {
+    const p = world.player;
+    const plImg = (p.onGround ? assets.pl1 : assets.pl2);
+    const skImg = assets.sk;
+
+    const plReady = plImg.complete && plImg.naturalWidth > 0;
+    const skReady = skImg.complete && skImg.naturalWidth > 0;
+
+    const plW = getPlayerDrawW();
+    const plH = getPlayerDrawH();
+
+    // キャラの基準位置
+    const px = p.x;
+    const py = p.y;
+
+    // スケボー（足元）
+    if (skReady) {
+      const skScale = 0.9; // 板の大きさ調整
+      const skW = skImg.naturalWidth * skScale;
+      const skH = skImg.naturalHeight * skScale;
+
+      // キャラの足元近辺に配置
+      const skX = px + (plW * 0.5) - (skW * 0.5);
+      const skY = py + plH - skH + p.boardYOffset;
+
+      ctx.drawImage(skImg, skX, skY, skW, skH);
+    }
+
+    // キャラ
+    if (plReady) {
+      ctx.drawImage(plImg, px, py, plW, plH);
+    } else {
+      // 代替表示
+      ctx.save();
+      ctx.fillStyle = "rgba(255,255,255,0.75)";
+      ctx.fillRect(px, py, plW, plH);
+      ctx.fillStyle = "#000";
+      ctx.font = "700 18px system-ui";
+      ctx.fillText("Loading PL*.png", px + 10, py + 30);
+      ctx.restore();
+    }
+  }
+
+  function getPlayerDrawW() {
+    // 画像基準が不明なので、縦画面で自然に見える幅を固定
+    return 160;
+  }
+  function getPlayerDrawH() {
+    return 200;
+  }
+
+  // ====== Boot ======
+  function boot() {
+    resizeCanvasToDPR();
+
+    // 初期位置（地面に合わせて立たせる）
+    const p = world.player;
+    p.y = world.groundY - (getPlayerDrawH() - world.feetOffset);
+    p.vy = 0;
+    p.onGround = true;
+
+    // 初期ブースト設定
+    world.boostMult = 1;
+    world.stockTimer = world.stockInterval;
+
+    // 縦画面での見た目安定（CSS上は縮むが内部は仮想解像度）
+    // 画面回転に追従（必要なら）
+    window.addEventListener("resize", () => {
+      // 仮想解像度は固定、DPRのみ再設定
+      resizeCanvasToDPR();
     });
-  }
-}
-function findNearestRingIndex(x,y, radius){
-  let k = -1, best = radius*radius;
-  for(let i=0;i<world.rings.length;i++){
-    const r = world.rings[i];
-    const dx = r.x-x, dy=r.y-y;
-    const d2 = dx*dx+dy*dy;
-    if(d2 < best){ best = d2; k=i; }
-  }
-  return k;
-}
 
-// ---------- 描画 ----------
-function draw(){
-  cx.setTransform(1,0,0,1,0,0);
-  cx.clearRect(0,0,cv.width,cv.height);
-
-  // カメラ（プレイ時は引き、ゴール時に寄る）
-  const baseZoom = (state.phase==='goal') ? (world.zoom||GOAL_ZOOM) : CAMERA_PLAY_ZOOM;
-  const camX = Math.max(0, Math.min(player.x - CANVAS_W/2/baseZoom, world.width - CANVAS_W/baseZoom));
-  cx.scale(baseZoom, baseZoom);
-  cx.translate(-camX, 0);
-
-  // 背景
-  if(assets.stage){
-    const scaleY = CANVAS_H / assets.stage.height;
-    const scaledW = Math.floor(assets.stage.width * scaleY);
-    cx.drawImage(assets.stage, 0, 0, scaledW, CANVAS_H);
-  }else{
-    cx.fillStyle='#223'; cx.fillRect(0,0,world.width, CANVAS_H);
+    updateHUD();
+    requestAnimationFrame(tick);
   }
 
-  // レール
-  for(const r of world.rails){
-    if(assets.rail){
-      cx.drawImage(assets.rail, r.x, r.y, r.w, r.h);
-    }else{
-      cx.fillStyle='#999'; cx.fillRect(r.x, r.y, r.w, r.h);
-    }
-  }
-
-  // リング
-  for(const r of world.rings){
-    const life = Math.max(0, 1 - (performance.now()-r.t)/1600);
-    if(life<=0) continue;
-    const s = 26*(0.7+0.3*life);
-    cx.globalAlpha = 0.6 + 0.4*life;
-    if(assets.ring) cx.drawImage(assets.ring, r.x - s/2, r.y - s/2, s, s);
-    else{ cx.fillStyle='gold'; cx.beginPath(); cx.arc(r.x, r.y, s/2, 0, Math.PI*2); cx.fill(); }
-    cx.globalAlpha = 1;
-  }
-
-  // プレイヤー（ボード→本体）
-  const px = player.x - player.w*0.5;
-  const py = player.y;
-
-  if(assets.board){
-    const bx = px + (player.w - BOARD_W)/2;
-    const by = py + player.h - BOARD_H + 2;
-    cx.drawImage(assets.board, bx, by, BOARD_W, BOARD_H);
-  }else{
-    cx.fillStyle='#c33'; cx.fillRect(px, py + player.h - BOARD_H, BOARD_W, BOARD_H);
-  }
-
-  if(assets.mobs){
-    const mx = px + SPRITE_OFF_X;
-    const my = py + SPRITE_OFF_Y;
-    cx.drawImage(assets.mobs, mx, my, SPRITE_W, SPRITE_H);
-  }else{
-    cx.fillStyle='#4cf'; cx.fillRect(px, py, player.w, player.h);
-  }
-}
-
-// ---------- リザルト ----------
-function showResult(){
-  state.phase = 'result';
-  state.resultTimeMs = performance.now() - state.startedAt;
-  const t = (state.resultTimeMs/1000);
-  const score = calcScore(t, player.ringCount, player.bestCombo);
-  const rank = calcRank(score);
-  rsTime.textContent  = `Time: ${t.toFixed(2)} s`;
-  rsRing.textContent  = `Rings: ${player.ringCount}`;
-  rsCombo.textContent = `Best Combo: ${player.bestCombo}`;
-  rsScore.textContent = `Score: ${score}`;
-  rsRank.textContent  = rank;
-  resultUI.style.display = 'grid';
-}
-
-// ---------- リスタート ----------
-function restart(){
-  resultUI.style.display = 'none';
-  state.phase = 'play';
-  world.zoom = CAMERA_PLAY_ZOOM;
-  player.x = 100;
-  player.y = world.groundY - player.h;
-  player.vy = 0;
-  player.speed = 0;
-  player.ringBoost = 0;
-  player.ringCount = 0;
-  player.combo = 0;
-  player.bestCombo = 0;
-  world.rings.length = 0;
-  state.startedAt = performance.now();
-}
+  // 画像読み込み失敗時もゲームは起動する（代替描画あり）
+  boot();
+})();
