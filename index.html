@@ -1,32 +1,66 @@
+<!-- index.html -->
 <!doctype html>
 <html lang="ja">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>MOB Skate - 1P</title>
+  <meta name="viewport" content="width=device-width, height=device-height, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>Skate Run</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <div id="app">
-    <canvas id="game" width="720" height="1280" aria-label="game canvas"></canvas>
+    <header id="topbar">
+      <div class="brand">MOB STREET - 1P RUN</div>
+      <div class="hud">
+        <div class="hud-item"><span class="label">SPEED</span><span id="hudSpeed" class="value">0</span></div>
+        <div class="hud-item"><span class="label">DIST</span><span id="hudDist" class="value">0</span></div>
+        <div class="hud-item"><span class="label">FPS</span><span id="hudFps" class="value">0</span></div>
+      </div>
+    </header>
 
-    <div id="hud">
-      <div id="boostHud">
-        <div class="label">BOOST</div>
-        <div id="boostPips" class="pips" aria-label="boost stocks">
-          <span class="pip"></span>
-          <span class="pip"></span>
-          <span class="pip"></span>
+    <!-- 上：ゲーム描画（操作エリアと必ず分離） -->
+    <main id="gameArea" aria-label="Game Area">
+      <canvas id="gameCanvas" width="360" height="640"></canvas>
+      <div id="overlay">
+        <div id="overlayTitle">Loading...</div>
+        <div id="overlayMsg">画像を読み込んでいます</div>
+      </div>
+    </main>
+
+    <!-- 下：操作エリア（固定） -->
+    <footer id="controlArea" aria-label="Control Area">
+      <div id="gaugeWrap">
+        <div class="gaugeLabel">BOOST STOCK</div>
+        <div id="gauge" class="gauge">
+          <div class="pip" data-i="0"></div>
+          <div class="pip" data-i="1"></div>
+          <div class="pip" data-i="2"></div>
         </div>
-        <div id="boostTimer" class="timer" aria-label="boost timer">+1 in 3.0s</div>
+        <div id="gaugeNote" class="gaugeNote">3秒に1つ回復（最大3）</div>
       </div>
 
       <div id="buttons">
-        <button id="btnJump" class="btn btn-primary" type="button">JUMP</button>
-        <button id="btnBoost" class="btn btn-secondary" type="button">BOOST</button>
-        <button id="btnJumpBoost" class="btn btn-danger" type="button">JUMP<br>BOOST</button>
+        <button id="btnJump" class="btn primary" type="button">
+          JUMP
+          <span class="sub">2段ジャンプ</span>
+        </button>
+
+        <button id="btnBoost" class="btn accent" type="button">
+          BOOST
+          <span class="sub">1回押し / ストック1</span>
+        </button>
+
+        <button id="btnJumpBoost" class="btn danger" type="button">
+          JUMP BOOST
+          <span class="sub">ストック3 / 超ジャンプ</span>
+        </button>
       </div>
-    </div>
+
+      <div id="tips">
+        <div class="tip">操作はこのエリア内だけで完結します（ゲーム画面と分離）。</div>
+        <div class="tip">PCなら Space=Jump / B=Boost / N=JumpBoost</div>
+      </div>
+    </footer>
   </div>
 
   <script src="game.js"></script>
