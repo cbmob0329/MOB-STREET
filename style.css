@@ -5,12 +5,11 @@
   --text:#eaf2ff;
   --muted:#a9b6cc;
   --line:rgba(255,255,255,0.12);
+  --shadow: 0 10px 30px rgba(0,0,0,0.35);
 
   --btnPrimary:#1c7cff;
   --btnAccent:#22c55e;
   --btnDanger:#ff4d4d;
-
-  --shadow: 0 10px 30px rgba(0,0,0,0.35);
 }
 
 /* スマホ長押し/選択/拡大などを強めに抑止 */
@@ -29,9 +28,8 @@ html, body{
               linear-gradient(180deg, var(--bg1), var(--bg0));
   color:var(--text);
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Yu Gothic", sans-serif;
-
   overscroll-behavior: none;
-  touch-action: none; /* ダブルタップズーム等抑止 */
+  touch-action: none;
 }
 
 #app{
@@ -52,20 +50,17 @@ html, body{
   background: linear-gradient(180deg, rgba(0,0,0,0.35), rgba(0,0,0,0.08));
   border-bottom: 1px solid var(--line);
 }
-
 .brand{
   font-weight:700;
   letter-spacing:0.4px;
   font-size:14px;
   white-space:nowrap;
 }
-
 .hud{
   display:flex;
   gap:10px;
   align-items:center;
 }
-
 .hud-item{
   display:flex;
   align-items:baseline;
@@ -75,7 +70,6 @@ html, body{
   border-radius:10px;
   background: rgba(0,0,0,0.18);
 }
-
 .hud-item .label{
   color:var(--muted);
   font-size:11px;
@@ -86,7 +80,7 @@ html, body{
   font-weight:700;
 }
 
-/* 上：ゲーム領域（フル表示） */
+/* 上：ゲーム領域（全面フィット） */
 #gameArea{
   position:relative;
   flex: 1 1 auto;
@@ -95,8 +89,6 @@ html, body{
   padding:0;
   overflow:hidden;
 }
-
-/* 黒帯が出ないよう、canvasは領域に完全フィット */
 #gameCanvas{
   position:absolute;
   inset:0;
@@ -106,7 +98,7 @@ html, body{
   background: linear-gradient(180deg, rgba(80,160,255,0.24), rgba(10,20,40,0.65));
 }
 
-/* ローディング等 */
+/* overlay */
 #overlay{
   position:absolute;
   inset:0;
@@ -118,15 +110,13 @@ html, body{
   pointer-events:none;
   text-align:center;
 }
-
-#overlay.hidden{
-  display:none;
-}
+#overlay.hidden{ display:none; }
 
 #overlayTitle{
-  font-size:20px;
-  font-weight:800;
-  text-shadow: 0 6px 18px rgba(0,0,0,0.35);
+  font-size:28px;
+  font-weight:900;
+  text-shadow: 0 8px 22px rgba(0,0,0,0.45);
+  letter-spacing:0.5px;
 }
 #overlayMsg{
   font-size:13px;
@@ -137,9 +127,64 @@ html, body{
   background: rgba(0,0,0,0.22);
 }
 
+/* result panel */
+.panel{
+  pointer-events:auto; /* resultのボタンだけ押せる */
+  margin-top:14px;
+  width:min(520px, 92vw);
+  border-radius:16px;
+  border:1px solid var(--line);
+  background: rgba(0,0,0,0.40);
+  box-shadow: var(--shadow);
+  overflow:hidden;
+}
+.panel.hidden{ display:none; }
+
+#panelBody{
+  padding:12px 14px;
+  text-align:left;
+  font-size:13px;
+  color:var(--text);
+  line-height:1.5;
+}
+#panelBody .row{
+  display:flex;
+  justify-content:space-between;
+  gap:10px;
+  padding:6px 0;
+  border-bottom:1px dashed rgba(255,255,255,0.12);
+}
+#panelBody .row:last-child{ border-bottom:none; }
+#panelBody .name{ font-weight:800; }
+#panelBody .time{ color:rgba(255,255,255,0.90); font-variant-numeric: tabular-nums; }
+#panelBody .rank{ color:rgba(255,255,255,0.85); min-width:44px; text-align:right; }
+
+.panelBtns{
+  display:flex;
+  gap:10px;
+  padding:12px 14px;
+  border-top:1px solid rgba(255,255,255,0.10);
+  justify-content:flex-end;
+}
+.panelBtn{
+  border:none;
+  border-radius:12px;
+  padding:10px 14px;
+  font-weight:900;
+  letter-spacing:0.4px;
+  background: rgba(255,255,255,0.10);
+  color: var(--text);
+  border:1px solid rgba(255,255,255,0.16);
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+.panelBtn:active{
+  transform: translateY(1px);
+}
+
 /* 下：操作エリア（固定・分離） */
 #controlArea{
-  flex: 0 0 25vh; /* 指定：25% */
+  flex: 0 0 25vh;
   min-height: 180px;
   max-height: 280px;
   background: linear-gradient(180deg, rgba(0,0,0,0.12), rgba(0,0,0,0.35));
@@ -160,7 +205,6 @@ html, body{
   border:1px solid var(--line);
   background: rgba(0,0,0,0.22);
 }
-
 .gaugeLabel{
   font-size:12px;
   letter-spacing:0.4px;
@@ -168,7 +212,6 @@ html, body{
   font-weight:700;
   white-space:nowrap;
 }
-
 .gauge{
   display:flex;
   gap:8px;
@@ -176,37 +219,31 @@ html, body{
   justify-content:center;
   flex:1 1 auto;
 }
-
 .pip{
   width:18px;
   height:18px;
   border-radius:6px;
   border:1px solid var(--line);
   background: rgba(255,255,255,0.06);
-  box-shadow: inset 0 0 0 1px rgba(0,0,0,0.12);
 }
-
 .pip.on{
   background: linear-gradient(180deg, rgba(34,197,94,1), rgba(34,197,94,0.45));
   border-color: rgba(34,197,94,0.85);
 }
-
 .gaugeNote{
   font-size:11px;
   color:var(--muted);
   white-space:nowrap;
 }
 
-/* ボタン群 */
+/* ボタン */
 #buttons{
   display:grid;
   grid-template-columns: 1fr 1fr 1.2fr;
   gap:10px;
   flex: 1 1 auto;
 }
-
 .btn{
-  position:relative;
   border:none;
   border-radius:16px;
   padding:14px 10px 12px;
@@ -215,11 +252,9 @@ html, body{
   letter-spacing:0.6px;
   box-shadow: var(--shadow);
   outline:none;
-  user-select:none;
   -webkit-tap-highlight-color: transparent;
-  touch-action: manipulation; /* ボタン操作を優先 */
+  touch-action: manipulation;
 }
-
 .btn .sub{
   display:block;
   font-weight:700;
@@ -228,20 +263,14 @@ html, body{
   margin-top:6px;
   letter-spacing:0.2px;
 }
-
 .btn:active{
   transform: translateY(1px);
   filter: brightness(0.98);
 }
-
 .btn.primary{ background: linear-gradient(180deg, rgba(28,124,255,1), rgba(28,124,255,0.72)); }
 .btn.accent{  background: linear-gradient(180deg, rgba(34,197,94,1), rgba(34,197,94,0.68)); }
 .btn.danger{  background: linear-gradient(180deg, rgba(255,77,77,1), rgba(255,77,77,0.72)); }
-
-.btn.disabled{
-  opacity:0.55;
-  filter: grayscale(0.2);
-}
+.btn.disabled{ opacity:0.55; }
 
 #tips{
   display:flex;
@@ -250,7 +279,6 @@ html, body{
   color:var(--muted);
   font-size:11px;
 }
-
 .tip{
   flex: 1 1 auto;
   border:1px dashed rgba(255,255,255,0.14);
