@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, height=device-height, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <title>Skate Run</title>
+  <title>MOB STREET - 1P RUN</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -23,9 +23,18 @@
     <!-- 上：ゲーム描画（操作エリアと必ず分離） -->
     <main id="gameArea" aria-label="Game Area">
       <canvas id="gameCanvas"></canvas>
-      <div id="overlay">
+
+      <!-- オーバーレイ（Loading / CountDown / Result） -->
+      <div id="overlay" class="">
         <div id="overlayTitle">Loading...</div>
         <div id="overlayMsg">画像を読み込んでいます</div>
+
+        <div id="overlayPanel" class="panel hidden">
+          <div id="panelBody"></div>
+          <div class="panelBtns">
+            <button id="btnRetry" class="panelBtn" type="button">RETRY</button>
+          </div>
+        </div>
       </div>
     </main>
 
@@ -59,7 +68,7 @@
       </div>
 
       <div id="tips">
-        <div class="tip">操作はこのエリア内だけで完結（ゲーム画面と分離）。</div>
+        <div class="tip">操作はこのエリア内だけ（ゲーム画面と分離）。</div>
         <div class="tip">PC: Space=Jump / B=Boost / N=JumpBoost</div>
       </div>
     </footer>
