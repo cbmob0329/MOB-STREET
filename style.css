@@ -6,7 +6,6 @@
   --muted:#a9b6cc;
   --line:rgba(255,255,255,0.12);
   --shadow: 0 10px 30px rgba(0,0,0,0.35);
-
   --btnPrimary:#1c7cff;
   --btnAccent:#22c55e;
   --btnDanger:#ff4d4d;
@@ -129,7 +128,7 @@ html, body{
 
 /* result panel */
 .panel{
-  pointer-events:auto; /* resultのボタンだけ押せる */
+  pointer-events:auto;
   margin-top:14px;
   width:min(520px, 92vw);
   border-radius:16px;
@@ -236,7 +235,7 @@ html, body{
   white-space:nowrap;
 }
 
-/* ボタン */
+/* Buttons */
 #buttons{
   display:grid;
   grid-template-columns: 1fr 1fr 1.2fr;
