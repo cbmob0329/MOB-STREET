@@ -1,6 +1,8 @@
-/* =========================
-   game.js  (PART 1)
-   ========================= */
+// game.js (PART 1/2)
+// === NOTE ===
+// このPart1の末尾に、次に送るPart2をそのまま追記すると完成します。
+// =====================
+
 (() => {
   "use strict";
 
@@ -39,9 +41,9 @@
     logicalW: 360,
     logicalH: 640,
 
-    // distance
+    // distance unit
     PX_PER_M: 10,
-    GOAL_M: 600,
+    GOAL_M: 600, // ★ 600m
 
     // visuals / body
     playerSize: 48,
@@ -60,19 +62,19 @@
     jumpBoostSpeedAdd: 520,
     jumpBoostDuration: 1.25,
 
-    // stage
+    // ground derived from st.png height
     groundMinH: 130,
     groundMaxH: 210,
 
-    // rail
+    // rail (lower)
     railRideSpeedAdd: 55,
     railSpawnAhead: 950,
     railDespawnBehind: 320,
     railGapMin: 160,
     railGapMax: 560,
-    railHeightRatio: 0.43,
+    railHeightRatio: 0.43, // ★ 低く
 
-    // puddle
+    // puddle (slowdown)
     puddleSpawnAhead: 950,
     puddleDespawnBehind: 320,
     puddleGapMin: 160,
@@ -89,22 +91,20 @@
     // countdown
     countdownSec: 3.0,
 
-    // halfpipe (platform type)
+    // halfpipe (ON GROUND like rail; must JUMP to ride)
     halfpipeSpawnAhead: 1200,
     halfpipeDespawnBehind: 520,
     halfpipeGapMin: 520,
     halfpipeGapMax: 1200,
 
-    // platform geometry tuning
-    pipeRimOffsetRatio: 0.12,   // 画像上端〜リップまで（だいたい）
-    pipeBottomOffsetRatio: 0.80,// 画像上端〜ボトムまで（だいたい）
-    pipeRimAboveGround: 6,      // リップを地面より上に出す量(px)
+    // pipe shape (gameplay approximation)
+    // lipY: pipe.y + (pipe.h * lipRatio) is the "rim height" (rideable ends)
+    pipeLipRatio: 0.18,
+    pipeDepthRatio: 0.55,      // depth under rim
+    pipeRideSpeedMaxAdd: 220,  // bonus near center
+    pipeRideSpeedMinAdd: 40,   // bonus near lips
 
-    // acceleration inside pipe (only when riding the pipe)
-    halfpipeSpeedMaxAdd: 220,
-    halfpipeSpeedMinAdd: 40,
-
-    // MOB boost zone
+    // MOB boost zone on pipe
     mobBoostMul: 1.5,
     mobZoneWRatio: 0.14,
     mobZonePosL: 0.23,
@@ -163,8 +163,8 @@
     sk:   { src: "redsk.png",   img: null },
     st:   { src: "st.png",      img: null },
     rail: { src: "gardw.png",   img: null },
-    hpr:  { src: "hpr.png",     img: null },
-    hpg:  { src: "hpg.png",     img: null },
+    hpr:  { src: "hpr.png",     img: null }, // blue
+    hpg:  { src: "hpg.png",     img: null }, // red
   };
 
   function loadImage(src) {
@@ -247,15 +247,13 @@
     stock: CONFIG.stockMax,
     stockTimer: 0,
 
-    // rails
+    // obstacles
     rails: [],
     railNextX: 0,
 
-    // puddles
     puddles: [],
     puddleNextX: 0,
 
-    // halfpipes (platform)
     halfpipes: [],
     halfpipeNextX: 0,
 
@@ -269,7 +267,7 @@
       name,
       isPlayer,
 
-      // world progress (px)
+      // world
       xw: 0,
 
       // render
@@ -286,7 +284,7 @@
       // flags
       onGround: true,
       onRail: false,
-      inPipe: false,
+      onPipe: false,
       jumpsUsed: 0,
 
       // modifiers
@@ -333,9 +331,7 @@
       { name:"GHOST 3", mul: 0.995, lane: 3, a: 0.70 },
       { name:"GHOST 4", mul: 1.015, lane: 4, a: 0.68 },
     ];
-    for (const g of ghostDefs) {
-      state.runners.push(makeRunner(g.name, false, g.mul, g.lane, g.a));
-    }
+    for (const g of ghostDefs) state.runners.push(makeRunner(g.name, false, g.mul, g.lane, g.a));
 
     for (let i = 0; i < state.runners.length; i++) {
       const r = state.runners[i];
@@ -344,7 +340,7 @@
       r.vy = 0;
       r.onGround = true;
       r.onRail = false;
-      r.inPipe = false;
+      r.onPipe = false;
       r.jumpsUsed = 0;
       r.boostTimer = 0;
       r.boostPower = 0;
@@ -368,30 +364,21 @@
     }
   }
 
-  // ====== Geometry helpers ======
+  // ====== Rail helpers ======
   function railTargetH() {
     return Math.round(state.groundH * CONFIG.railHeightRatio);
   }
 
-  // ====== Halfpipe platform geometry ======
+  // ====== Halfpipe helpers (ON GROUND) ======
   function halfpipeDims(img) {
-    // "ハーフパイプのサイズは今のガードレールくらい"
+    // サイズはレールくらい（高さ合わせ）
     const targetH = railTargetH();
     const scale = targetH / img.height;
     const w = Math.max(1, Math.floor(img.width * scale));
     const h = Math.max(1, Math.floor(img.height * scale));
-
-    const rimOffset = Math.floor(h * CONFIG.pipeRimOffsetRatio);
-    const bottomOffset = Math.floor(h * CONFIG.pipeBottomOffsetRatio);
-
-    // place so rim is above ground (platform)
-    const rimY = state.groundTop - CONFIG.pipeRimAboveGround;
-    const y = rimY - rimOffset;
-
-    const bottomY = y + bottomOffset;
-    const depth = Math.max(12, bottomY - rimY);
-
-    return { w, h, y, rimY, depth };
+    const lipY = Math.max(2, Math.floor(h * CONFIG.pipeLipRatio));
+    const depth = Math.max(10, Math.floor(h * CONFIG.pipeDepthRatio));
+    return { w, h, lipY, depth };
   }
 
   function getActivePipeAtX(xw) {
@@ -402,11 +389,11 @@
     return null;
   }
 
+  // 走行面（リム〜ボウル底）: U字カーブ近似
   function pipeSurfaceY(pipe, xw) {
-    // Platform surface curve: rimY .. rimY+depth
     const t = clamp((xw - pipe.x) / pipe.w, 0, 1);
-    // smooth U
-    const y = pipe.rimY + pipe.depth * (1 - Math.cos(2 * Math.PI * t)) * 0.5;
+    const rimY = pipe.y + pipe.lipY; // ★ 地面上に置いたパイプのリム位置
+    const y = rimY + pipe.depth * (1 - Math.cos(2 * Math.PI * t)) * 0.5;
     return y;
   }
 
@@ -414,7 +401,7 @@
     const t = clamp((xw - pipe.x) / pipe.w, 0, 1);
     const centerDist = Math.abs(t - 0.5) / 0.5; // 0..1
     const k = 1 - clamp(centerDist, 0, 1);      // 1 at center
-    return CONFIG.halfpipeSpeedMinAdd + (CONFIG.halfpipeSpeedMaxAdd - CONFIG.halfpipeSpeedMinAdd) * k;
+    return CONFIG.pipeRideSpeedMinAdd + (CONFIG.pipeRideSpeedMaxAdd - CONFIG.pipeRideSpeedMinAdd) * k;
   }
 
   function inMobBoostZone(pipe, xw) {
@@ -425,6 +412,14 @@
     return inL || inR;
   }
 
+  function isInsideAnyPipeSpan(x0, x1) {
+    for (let i = 0; i < state.halfpipes.length; i++) {
+      const p = state.halfpipes[i];
+      if ((x1 > p.x) && (x0 < p.x + p.w)) return true;
+    }
+    return false;
+  }
+
   // ====== Speed ======
   function runnerSpeed(r) {
     const base = CONFIG.baseSpeed * (r.isPlayer ? 1.0 : r.speedMul);
@@ -433,7 +428,7 @@
     const slow = (r.slowTimer > 0 ? CONFIG.puddleSlowAmount : 0);
 
     let pipeAdd = 0;
-    if (r.inPipe && !r.onRail && !r.finished) {
+    if (r.onPipe) {
       const pipe = getActivePipeAtX(r.xw + r.w * 0.5);
       if (pipe) pipeAdd = pipeSpeedBonus(pipe, r.xw + r.w * 0.5);
     }
@@ -463,15 +458,15 @@
   function tryJump(r) {
     if (r.finished) return false;
 
-    if (r.onGround || r.onRail || r.inPipe) {
+    if (r.onGround || r.onRail || r.onPipe) {
       r.vy = -CONFIG.jumpV1;
       r.onGround = false;
       r.onRail = false;
-      r.inPipe = false;
+      r.onPipe = false;
       r.jumpsUsed = 1;
       return true;
     }
-    if (!r.onGround && !r.onRail && !r.inPipe && r.jumpsUsed < 2) {
+    if (!r.onGround && !r.onRail && !r.onPipe && r.jumpsUsed < 2) {
       r.vy = -CONFIG.jumpV2;
       r.jumpsUsed = 2;
       return true;
@@ -479,16 +474,16 @@
     return false;
   }
 
-  function applyBoostToRunner(r, power, duration, mul) {
-    r.boostTimer = duration;
-    r.boostPower = power * mul;
-  }
-
   function boostMultiplierForPlayerNow() {
     const player = state.runners[state.playerIndex];
     const pipe = getActivePipeAtX(player.xw + player.w * 0.5);
     if (pipe && inMobBoostZone(pipe, player.xw + player.w * 0.5)) return CONFIG.mobBoostMul;
     return 1.0;
+  }
+
+  function applyBoostToRunner(r, power, duration, mul) {
+    r.boostTimer = duration;
+    r.boostPower = power * mul;
   }
 
   function tryBoostPlayer() {
@@ -511,7 +506,7 @@
     r.vy = -CONFIG.jumpBoostV;
     r.onGround = false;
     r.onRail = false;
-    r.inPipe = false;
+    r.onPipe = false;
     r.jumpsUsed = 2;
 
     const mul = boostMultiplierForPlayerNow();
@@ -540,20 +535,11 @@
     state.railNextX = atX + w + gap;
   }
 
-  function isInsideAnyPipeSpan(x0, x1) {
-    for (let i = 0; i < state.halfpipes.length; i++) {
-      const p = state.halfpipes[i];
-      const overlap = (x1 > p.x) && (x0 < p.x + p.w);
-      if (overlap) return true;
-    }
-    return false;
-  }
-
   function seedRailsInitial() {
     let x = state.railNextX;
     for (let i = 0; i < 3; i++) {
       if (!isInsideAnyPipeSpan(x, x + 200)) addRail(x);
-      else state.railNextX += randi(220, 360);
+      else x += 260;
       x = state.railNextX;
     }
   }
@@ -564,11 +550,8 @@
 
     while (state.railNextX < ahead) {
       const x = state.railNextX;
-      if (!isInsideAnyPipeSpan(x, x + 240)) {
-        addRail(x);
-      } else {
-        state.railNextX += randi(220, 360);
-      }
+      if (!isInsideAnyPipeSpan(x, x + 240)) addRail(x);
+      else state.railNextX += randi(240, 380);
     }
 
     const behind = state.cameraX - CONFIG.railDespawnBehind;
@@ -598,45 +581,10 @@
         r.vy = 0;
         r.onRail = true;
         r.onGround = false;
-        r.inPipe = false;
+        r.onPipe = false;
         r.jumpsUsed = 0;
         return;
       }
-    }
-  }
-
-  // ====== Pipe platform ride ======
-  function resolvePipeRide(r, prevY) {
-    // rail優先のため、rail上なら処理しない
-    if (r.onRail) { r.inPipe = false; return; }
-
-    const cx = r.xw + r.w * 0.5;
-    const pipe = getActivePipeAtX(cx);
-    if (!pipe) { r.inPipe = false; return; }
-
-    const surfaceY = pipeSurfaceY(pipe, cx);
-    const footY = r.y + r.h;
-    const prevFootY = prevY + r.h;
-
-    // “上から落ちてきた時だけ”着地可能（地面から下をくぐって引き上げない）
-    const crossing = (prevFootY <= surfaceY) && (footY >= surfaceY) && (r.vy >= 0);
-
-    // すでに乗っている時は、曲面に沿って追従（小さな誤差許容）
-    const follow =
-      r.inPipe &&
-      (footY >= surfaceY - 4) &&
-      (footY <= surfaceY + 10) &&
-      (r.vy >= 0);
-
-    if (crossing || follow) {
-      r.y = surfaceY - r.h;
-      r.vy = 0;
-      r.inPipe = true;
-      r.onGround = false;
-      r.jumpsUsed = 0;
-    } else {
-      // pipe内にいても、曲面より下へ抜けたら落下（＝乗れていない）
-      if (r.inPipe && footY > surfaceY + 14) r.inPipe = false;
     }
   }
 
@@ -654,8 +602,8 @@
   function seedPuddlesInitial() {
     let x = state.puddleNextX;
     for (let i = 0; i < 4; i++) {
-      if (!isInsideAnyPipeSpan(x, x + 140)) addPuddle(x);
-      else state.puddleNextX += randi(180, 320);
+      if (!isInsideAnyPipeSpan(x, x + 160)) addPuddle(x);
+      else x += 240;
       x = state.puddleNextX;
     }
   }
@@ -666,11 +614,8 @@
 
     while (state.puddleNextX < ahead) {
       const x = state.puddleNextX;
-      if (!isInsideAnyPipeSpan(x, x + 160)) {
-        addPuddle(x);
-      } else {
-        state.puddleNextX += randi(180, 320);
-      }
+      if (!isInsideAnyPipeSpan(x, x + 180)) addPuddle(x);
+      else state.puddleNextX += randi(220, 360);
     }
 
     const behind = state.cameraX - CONFIG.puddleDespawnBehind;
@@ -678,7 +623,7 @@
   }
 
   function applyPuddleSlow(r) {
-    if (r.onRail || r.inPipe) return;
+    if (r.onRail || r.onPipe) return;
     const footY = r.y + r.h;
     if (footY < state.groundTop - 1) return;
 
@@ -692,19 +637,23 @@
     }
   }
 
-  // ====== Halfpipes spawn ======
+  // ====== Halfpipes (ON GROUND, jump-to-ride) ======
   function addHalfpipe(atX, kind) {
     const img = (kind === "hpg") ? ASSETS.hpg.img : ASSETS.hpr.img;
     const d = halfpipeDims(img);
+
+    // ★ 地面の上：ガードレールと同じ置き方（bottom = groundTop + 2）
+    const bottom = state.groundTop + 2;
+    const y = bottom - d.h;
 
     const pipe = {
       kind,
       img,
       x: atX,
-      y: d.y,       // draw y (platform)
+      y,
       w: d.w,
       h: d.h,
-      rimY: d.rimY, // surface baseline
+      lipY: d.lipY,
       depth: d.depth,
     };
     state.halfpipes.push(pipe);
@@ -726,11 +675,38 @@
     const ahead = player.xw + CONFIG.halfpipeSpawnAhead;
 
     while (state.halfpipeNextX < ahead) {
-      addHalfpipe(state.halfpipeNextX, Math.random() < 0.5 ? "hpr" : "hpg");
+      addHalfpipe(state.halfpipeNextX, (Math.random() < 0.5) ? "hpr" : "hpg");
     }
 
     const behind = state.cameraX - CONFIG.halfpipeDespawnBehind;
     state.halfpipes = state.halfpipes.filter(p => p.x + p.w > behind);
+  }
+
+  // 「ジャンプして乗る」判定：上から落下して面を跨いだ時だけ着地
+  function resolvePipeRide(r, prevY) {
+    r.onPipe = false;
+
+    // rail優先。rail上ならpipeは無視
+    if (r.onRail) return;
+
+    const cx = r.xw + r.w * 0.5;
+    const pipe = getActivePipeAtX(cx);
+    if (!pipe) return;
+
+    const prevFootY = prevY + r.h;
+    const footY = r.y + r.h;
+    const surfaceY = pipeSurfaceY(pipe, cx);
+
+    // ★ 重要：歩いてるだけで吸い込まれないように、"空中からの落下" でのみ着地可
+    const wasAboveGround = prevFootY < (state.groundTop - 2); // 前フレームで地面より上
+    const crossing = (prevFootY <= surfaceY) && (footY >= surfaceY);
+    if (crossing && r.vy >= 0 && wasAboveGround) {
+      r.y = surfaceY - r.h;
+      r.vy = 0;
+      r.onPipe = true;
+      r.onGround = false;
+      r.jumpsUsed = 0;
+    }
   }
 
   // ====== Ghost AI ======
@@ -741,7 +717,7 @@
     const lookahead = 150;
     const xw = r.xw;
 
-    // rail jump
+    // rail close -> jump
     let targetRail = null;
     for (let i = 0; i < state.rails.length; i++) {
       const rail = state.rails[i];
@@ -749,22 +725,14 @@
       const dx = rail.x - xw;
       if (dx >= 0 && dx <= lookahead) { targetRail = rail; break; }
     }
-    if (targetRail && (r.onGround || r.onRail || r.inPipe)) {
+    if (targetRail && (r.onGround || r.onRail || r.onPipe)) {
       tryJump(r);
       r.aiCooldown = rand(0.35, 0.65);
       return;
     }
 
-    // pipe hop: only if already riding pipe (keeps "jump to ride" feel)
-    const pipe = getActivePipeAtX(r.xw + r.w * 0.5);
-    if (pipe && r.inPipe && Math.random() < 0.05) {
-      tryJump(r);
-      r.aiCooldown = rand(0.55, 0.9);
-      return;
-    }
-
-    // variety hops on ground
-    if (!pipe && (r.onGround || r.onRail) && Math.random() < 0.04) {
+    // occasionally hop (avoid hopping if currently on pipe to keep ride)
+    if (!r.onPipe && (r.onGround || r.onRail) && Math.random() < 0.04) {
       tryJump(r);
       r.aiCooldown = rand(0.55, 0.9);
       return;
@@ -775,9 +743,7 @@
 
   // ====== Finish / Result ======
   function allFinished() {
-    for (let i = 0; i < state.runners.length; i++) {
-      if (!state.runners[i].finished) return false;
-    }
+    for (let i = 0; i < state.runners.length; i++) if (!state.runners[i].finished) return false;
     return true;
   }
 
@@ -813,11 +779,118 @@
     showPanel(html);
   }
 
+  // ====== Physics / Race update ======
+  function updateRunnerPhysics(r, dt) {
+    if (r.finished) return;
+
+    const prevY = r.y;
+
+    r.vy += CONFIG.gravity * dt;
+    r.vy = clamp(r.vy, -99999, CONFIG.maxFallV);
+    r.y += r.vy * dt;
+
+    // rail ride
+    resolveRailRide(r, prevY);
+
+    // pipe ride (jump-to-ride)
+    resolvePipeRide(r, prevY);
+
+    // ground collision (only if not on rail/pipe)
+    if (!r.onRail && !r.onPipe) {
+      if (r.y + r.h >= state.groundTop) {
+        r.y = state.groundTop - r.h;
+        r.vy = 0;
+        r.onGround = true;
+        r.jumpsUsed = 0;
+      } else {
+        r.onGround = false;
+      }
+    } else {
+      r.onGround = false;
+    }
+
+    // puddle
+    applyPuddleSlow(r);
+  }
+
+  function advanceRunner(r, dt) {
+    if (r.finished) return;
+    r.xw += runnerSpeed(r) * dt;
+  }
+
+  function updateRace(dt) {
+    spawnHalfpipes();
+    spawnRails();
+    spawnPuddles();
+
+    for (let i = 0; i < state.runners.length; i++) {
+      const r = state.runners[i];
+      updateTimers(r, dt);
+      if (!r.isPlayer) ghostAI(r, dt);
+
+      updateRunnerPhysics(r, dt);
+      advanceRunner(r, dt);
+      updateFinish(r);
+    }
+
+    const player = state.runners[state.playerIndex];
+    state.cameraX = player.xw - player.screenX;
+
+    if (allFinished()) showResult();
+  }
+
+  // ====== Main Loop (logic only; render in Part2) ======
+  function step(ms) {
+    const dt = clamp((ms - state.lastMs) / 1000, 0, 0.033);
+    state.lastMs = ms;
+
+    // FPS
+    state.fpsAcc += dt;
+    state.fpsCnt += 1;
+    if (state.fpsAcc >= 0.5) {
+      state.fps = Math.round(state.fpsCnt / state.fpsAcc);
+      state.fpsAcc = 0;
+      state.fpsCnt = 0;
+      hudFps.textContent = String(state.fps);
+    }
+
+    fitCanvas();
+
+    if (state.phase === GAME.PHASE.COUNTDOWN) {
+      state.countdownLeft -= dt;
+      const t = Math.max(0, state.countdownLeft);
+      const n = Math.ceil(t);
+      if (t > 0) {
+        setOverlay(String(n), "READY");
+      } else {
+        state.phase = GAME.PHASE.RUN;
+        hideOverlay();
+        state.runTime = 0;
+      }
+    }
+
+    if (state.phase === GAME.PHASE.RUN) {
+      regenStock(dt);
+
+      // input priority
+      if (input.jumpBoostQueued) { input.jumpBoostQueued = false; tryJumpBoostPlayer(); }
+      if (input.boostQueued)     { input.boostQueued = false;     tryBoostPlayer(); }
+      if (input.jumpQueued)      { input.jumpQueued = false;      tryJump(state.runners[state.playerIndex]); }
+
+      state.runTime += dt;
+      updateRace(dt);
+    }
+
+    updateGaugeUI();
+
+    // render is in Part2
+    render();
+
+    requestAnimationFrame(step);
+  }
+
   /* === PART2 START === */
-/* =========================
-   game.js  (PART 2)
-   ========================= */
-/* === PART2 CONTINUE === */
+ /* === PART2 CONTINUE === */
 
   // ====== Render ======
   function beginLogical() {
@@ -825,7 +898,7 @@
     const ch = canvas.height;
     const sx = cw / CONFIG.logicalW;
     const sy = ch / CONFIG.logicalH;
-    const s = Math.max(sx, sy);
+    const s = Math.max(sx, sy); // full-fit cropping (no black bars)
 
     const viewW = CONFIG.logicalW * s;
     const viewH = CONFIG.logicalH * s;
@@ -849,12 +922,14 @@
     const stImg = ASSETS.st.img;
     const y = state.groundTop;
 
+    // base ground shade
     ctx.fillStyle = "rgba(0,0,0,0.22)";
     ctx.fillRect(0, y, CONFIG.logicalW, state.groundH);
 
     if (stImg) {
       const tileW = state.stTileW;
       const tileH = state.groundH;
+
       const scroll = state.cameraX;
       let startX = -(((scroll % tileW) + tileW) % tileW);
 
@@ -863,30 +938,9 @@
       }
     }
 
+    // ground line
     ctx.fillStyle = "rgba(255,255,255,0.10)";
     ctx.fillRect(0, y, CONFIG.logicalW, 1);
-  }
-
-  function drawHalfpipes() {
-    for (let i = 0; i < state.halfpipes.length; i++) {
-      const p = state.halfpipes[i];
-      const sx = p.x - state.cameraX;
-      if (sx > CONFIG.logicalW + 260 || sx + p.w < -260) continue;
-
-      ctx.drawImage(p.img, 0, 0, p.img.width, p.img.height, sx, p.y, p.w, p.h);
-
-      // MOB boost zone hint (very subtle)
-      ctx.save();
-      ctx.globalAlpha = 0.10;
-      ctx.fillStyle = "rgba(255,255,255,0.9)";
-      const zw = p.w * CONFIG.mobZoneWRatio;
-      const zl = (p.w * CONFIG.mobZonePosL) - zw * 0.5;
-      const zr = (p.w * CONFIG.mobZonePosR) - zw * 0.5;
-      // draw small hint line near rim
-      ctx.fillRect(sx + zl, p.rimY - 1, zw, 2);
-      ctx.fillRect(sx + zr, p.rimY - 1, zw, 2);
-      ctx.restore();
-    }
   }
 
   function drawRails() {
@@ -896,7 +950,7 @@
     for (let i = 0; i < state.rails.length; i++) {
       const r = state.rails[i];
       const sx = r.x - state.cameraX;
-      if (sx > CONFIG.logicalW + 220 || sx + r.w < -220) continue;
+      if (sx > CONFIG.logicalW + 240 || sx + r.w < -240) continue;
       ctx.drawImage(img, 0, 0, img.width, img.height, sx, r.y, r.w, r.h);
     }
   }
@@ -916,7 +970,7 @@
     for (let i = 0; i < state.puddles.length; i++) {
       const p = state.puddles[i];
       const sx = p.x - state.cameraX;
-      if (sx > CONFIG.logicalW + 220 || sx + p.w < -220) continue;
+      if (sx > CONFIG.logicalW + 240 || sx + p.w < -240) continue;
 
       ctx.save();
       ctx.globalAlpha = 0.55;
@@ -932,8 +986,32 @@
     }
   }
 
+  function drawHalfpipes() {
+    for (let i = 0; i < state.halfpipes.length; i++) {
+      const p = state.halfpipes[i];
+      const sx = p.x - state.cameraX;
+      if (sx > CONFIG.logicalW + 300 || sx + p.w < -300) continue;
+
+      ctx.drawImage(p.img, 0, 0, p.img.width, p.img.height, sx, p.y, p.w, p.h);
+
+      // (optional) extremely subtle hint lines at MOB boost zones (no text)
+      ctx.save();
+      ctx.globalAlpha = 0.10;
+      ctx.fillStyle = "rgba(255,255,255,0.9)";
+      const zw = p.w * CONFIG.mobZoneWRatio;
+      const zl = (p.w * CONFIG.mobZonePosL) - zw * 0.5;
+      const zr = (p.w * CONFIG.mobZonePosR) - zw * 0.5;
+      const rimY = p.y + p.lipY;
+
+      // tiny highlight on rim
+      ctx.fillRect(sx + zl, rimY - 2, zw, 4);
+      ctx.fillRect(sx + zr, rimY - 2, zw, 4);
+      ctx.restore();
+    }
+  }
+
   function drawRunner(r) {
-    const plImg = (r.onGround || r.onRail || r.inPipe) ? ASSETS.pl1.img : ASSETS.pl2.img;
+    const plImg = (r.onGround || r.onRail || r.onPipe) ? ASSETS.pl1.img : ASSETS.pl2.img;
     const skImg = ASSETS.sk.img;
 
     let sx;
@@ -949,17 +1027,11 @@
     const x = sx;
     const y = r.y + laneOffset;
 
-    if (x < -120 || x > CONFIG.logicalW + 120) return;
+    if (x < -160 || x > CONFIG.logicalW + 160) return;
 
-    // shadow base
-    let shadowBaseY = state.groundTop + 6;
-    if (r.onRail) shadowBaseY = y + r.h + 8;
-    if (r.inPipe) {
-      const pipe = getActivePipeAtX(r.xw + r.w * 0.5);
-      if (pipe) shadowBaseY = Math.min(state.groundTop + 6, pipeSurfaceY(pipe, r.xw + r.w * 0.5) + 10);
-    }
-
-    const shadowAlpha = (r.onGround || r.onRail || r.inPipe) ? 0.26 : 0.14;
+    // shadow base: if on rail -> under runner; else -> ground line
+    const shadowBaseY = (r.onRail || r.onPipe) ? (y + r.h + 8) : (state.groundTop + 6);
+    const shadowAlpha = (r.onGround || r.onRail || r.onPipe) ? 0.26 : 0.14;
 
     ctx.save();
     ctx.globalAlpha = r.alpha;
@@ -969,7 +1041,7 @@
     ctx.ellipse(x + r.w / 2, shadowBaseY, (r.w * 0.72) / 2, 6, 0, 0, Math.PI * 2);
     ctx.fill();
 
-    // board placement (riding look)
+    // board placement: "character is riding"
     const boardW = r.w * 1.05;
     const boardH = r.h * 0.45;
     const boardX = x + (r.w - boardW) * 0.5;
@@ -987,8 +1059,8 @@
       ctx.fillRect(x, y, r.w, r.h);
     }
 
-    // speed effect
-    if (r.boostTimer > 0 || r.onRail || r.inPipe) {
+    // speed effect (boost/rail/pipe)
+    if (r.boostTimer > 0 || r.onRail || r.onPipe) {
       const intensity = r.onRail ? 0.35 : clamp((r.boostPower || 0) / CONFIG.jumpBoostSpeedAdd, 0.25, 1.0);
       ctx.globalAlpha = r.alpha * clamp(0.14 + intensity * 0.28, 0.14, 0.52);
       ctx.fillStyle = "#ffffff";
@@ -1035,117 +1107,8 @@
     btnJumpBoost.classList.toggle("disabled", state.stock < 3);
   }
 
-  // ====== Physics ======
-  function updateRunnerPhysics(r, dt) {
-    if (r.finished) return;
-
-    const prevY = r.y;
-
-    // integrate
-    r.vy += CONFIG.gravity * dt;
-    r.vy = clamp(r.vy, -99999, CONFIG.maxFallV);
-    r.y += r.vy * dt;
-
-    // 1) rail landing
-    resolveRailRide(r, prevY);
-
-    // 2) pipe landing / follow (platform)
-    resolvePipeRide(r, prevY);
-
-    // 3) ground landing (only if not on rail and not on pipe)
-    if (!r.onRail && !r.inPipe) {
-      if (r.y + r.h >= state.groundTop) {
-        r.y = state.groundTop - r.h;
-        r.vy = 0;
-        r.onGround = true;
-        r.jumpsUsed = 0;
-      } else {
-        r.onGround = false;
-      }
-    } else {
-      r.onGround = false;
-    }
-
-    // puddle
-    applyPuddleSlow(r);
-  }
-
-  function advanceRunner(r, dt) {
-    if (r.finished) return;
-    r.xw += runnerSpeed(r) * dt;
-  }
-
-  // ====== Race update ======
-  function updateRace(dt) {
-    spawnHalfpipes();
-    spawnRails();
-    spawnPuddles();
-
-    for (let i = 0; i < state.runners.length; i++) {
-      const r = state.runners[i];
-      updateTimers(r, dt);
-
-      if (!r.isPlayer) ghostAI(r, dt);
-
-      updateRunnerPhysics(r, dt);
-      advanceRunner(r, dt);
-      updateFinish(r);
-    }
-
-    const player = state.runners[state.playerIndex];
-    state.cameraX = player.xw - player.screenX;
-
-    if (allFinished()) showResult();
-  }
-
-  // ====== Main Loop ======
-  function step(ms) {
-    const dt = clamp((ms - state.lastMs) / 1000, 0, 0.033);
-    state.lastMs = ms;
-
-    // FPS
-    state.fpsAcc += dt;
-    state.fpsCnt += 1;
-    if (state.fpsAcc >= 0.5) {
-      state.fps = Math.round(state.fpsCnt / state.fpsAcc);
-      state.fpsAcc = 0;
-      state.fpsCnt = 0;
-      hudFps.textContent = String(state.fps);
-    }
-
-    fitCanvas();
-
-    if (state.phase === GAME.PHASE.COUNTDOWN) {
-      state.countdownLeft -= dt;
-      const t = Math.max(0, state.countdownLeft);
-      const n = Math.ceil(t);
-      if (t > 0) {
-        setOverlay(String(n), "READY");
-      } else {
-        state.phase = GAME.PHASE.RUN;
-        hideOverlay();
-        state.runTime = 0;
-      }
-    }
-
-    if (state.phase === GAME.PHASE.RUN) {
-      regenStock(dt);
-
-      // input priority
-      if (input.jumpBoostQueued) { input.jumpBoostQueued = false; tryJumpBoostPlayer(); }
-      if (input.boostQueued)     { input.boostQueued = false;     tryBoostPlayer(); }
-      if (input.jumpQueued)      { input.jumpQueued = false;      tryJump(state.runners[state.playerIndex]); }
-
-      state.runTime += dt;
-      updateRace(dt);
-    }
-
-    updateGaugeUI();
-    render();
-    requestAnimationFrame(step);
-  }
-
   function render() {
+    // clear full canvas
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -1154,11 +1117,13 @@
 
     drawSky();
     drawStage();
+
+    // order: puddle (on ground) -> halfpipe (on ground but tall) -> rail (above ground)
     drawPuddles();
-    drawHalfpipes(); // ★ platformとして上に描く
+    drawHalfpipes();
     drawRails();
 
-    // ghosts first, player last
+    // runners: ghosts first, player last
     for (let i = 0; i < state.runners.length; i++) {
       if (state.runners[i].isPlayer) continue;
       drawRunner(state.runners[i]);
@@ -1166,6 +1131,31 @@
     drawRunner(state.runners[state.playerIndex]);
 
     drawHUDLogical();
+  }
+
+  // ====== Result ======
+  function showResult() {
+    state.phase = GAME.PHASE.RESULT;
+
+    const list = state.runners
+      .map(r => ({ name: r.name, t: r.finishTime, isPlayer: r.isPlayer }))
+      .sort((a, b) => a.t - b.t);
+
+    let html = "";
+    for (let i = 0; i < list.length; i++) {
+      const row = list[i];
+      const rank = i + 1;
+      html += `
+        <div class="row">
+          <div class="name">${rank}. ${row.name}${row.isPlayer ? " (YOU)" : ""}</div>
+          <div class="time">${formatTime(row.t)}</div>
+          <div class="rank">#${rank}</div>
+        </div>
+      `;
+    }
+
+    setOverlay("RESULT", `GOAL ${CONFIG.GOAL_M}m`);
+    showPanel(html);
   }
 
   // ====== Boot / Restart ======
