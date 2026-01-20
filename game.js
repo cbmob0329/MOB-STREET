@@ -1,7 +1,5 @@
-// game.js (PART 1/2)
-// === NOTE ===
-// このPart1の末尾に、次に送るPart2をそのまま追記すると完成します。
-// =====================
+// game.js (PART 1/3)
+// このPart1の末尾に Part2 → Part3 を順に追記すると完成します。
 
 (() => {
   "use strict";
@@ -43,7 +41,7 @@
 
     // distance unit
     PX_PER_M: 10,
-    GOAL_M: 600, // ★ 600m
+    GOAL_M: 600,
 
     // visuals / body
     playerSize: 48,
@@ -72,7 +70,7 @@
     railDespawnBehind: 320,
     railGapMin: 160,
     railGapMax: 560,
-    railHeightRatio: 0.43, // ★ 低く
+    railHeightRatio: 0.43, // lower
 
     // puddle (slowdown)
     puddleSpawnAhead: 950,
@@ -98,11 +96,10 @@
     halfpipeGapMax: 1200,
 
     // pipe shape (gameplay approximation)
-    // lipY: pipe.y + (pipe.h * lipRatio) is the "rim height" (rideable ends)
-    pipeLipRatio: 0.18,
-    pipeDepthRatio: 0.55,      // depth under rim
-    pipeRideSpeedMaxAdd: 220,  // bonus near center
-    pipeRideSpeedMinAdd: 40,   // bonus near lips
+    pipeLipRatio: 0.18,      // rim position in image height
+    pipeDepthRatio: 0.55,    // depth under rim
+    pipeRideSpeedMaxAdd: 220,
+    pipeRideSpeedMinAdd: 40,
 
     // MOB boost zone on pipe
     mobBoostMul: 1.5,
@@ -320,11 +317,13 @@
   function initRunners() {
     state.runners = [];
 
+    // player more left
     const player = makeRunner("YOU", true, 1.00, 0, 1.0);
     player.screenX = Math.floor(CONFIG.logicalW * 0.18);
     state.runners.push(player);
     state.playerIndex = 0;
 
+    // 4 ghosts
     const ghostDefs = [
       { name:"GHOST 1", mul: 0.985, lane: 1, a: 0.75 },
       { name:"GHOST 2", mul: 1.005, lane: 2, a: 0.72 },
@@ -371,7 +370,7 @@
 
   // ====== Halfpipe helpers (ON GROUND) ======
   function halfpipeDims(img) {
-    // サイズはレールくらい（高さ合わせ）
+    // size same as rail-ish (height)
     const targetH = railTargetH();
     const scale = targetH / img.height;
     const w = Math.max(1, Math.floor(img.width * scale));
@@ -389,10 +388,9 @@
     return null;
   }
 
-  // 走行面（リム〜ボウル底）: U字カーブ近似
   function pipeSurfaceY(pipe, xw) {
     const t = clamp((xw - pipe.x) / pipe.w, 0, 1);
-    const rimY = pipe.y + pipe.lipY; // ★ 地面上に置いたパイプのリム位置
+    const rimY = pipe.y + pipe.lipY;
     const y = rimY + pipe.depth * (1 - Math.cos(2 * Math.PI * t)) * 0.5;
     return y;
   }
@@ -637,12 +635,16 @@
     }
   }
 
+  /* === PART 2 START === */
+ // game.js (PART 2/3)
+// Part1の末尾にこのPart2を追記してください。
+
   // ====== Halfpipes (ON GROUND, jump-to-ride) ======
   function addHalfpipe(atX, kind) {
     const img = (kind === "hpg") ? ASSETS.hpg.img : ASSETS.hpr.img;
     const d = halfpipeDims(img);
 
-    // ★ 地面の上：ガードレールと同じ置き方（bottom = groundTop + 2）
+    // ON GROUND: bottom aligns with ground bottom (same as rail)
     const bottom = state.groundTop + 2;
     const y = bottom - d.h;
 
@@ -682,24 +684,39 @@
     state.halfpipes = state.halfpipes.filter(p => p.x + p.w > behind);
   }
 
-  // 「ジャンプして乗る」判定：上から落下して面を跨いだ時だけ着地
+  // ★ Fix: slope ride must "stick" after landing, otherwise runner falls through
+  // jump-to-ride: only land if coming from above ground; once onPipe, follow surface every frame
   function resolvePipeRide(r, prevY) {
-    r.onPipe = false;
-
-    // rail優先。rail上ならpipeは無視
-    if (r.onRail) return;
+    // rail overrides pipe
+    if (r.onRail) {
+      r.onPipe = false;
+      return;
+    }
 
     const cx = r.xw + r.w * 0.5;
     const pipe = getActivePipeAtX(cx);
-    if (!pipe) return;
+
+    // outside pipe => release
+    if (!pipe) {
+      r.onPipe = false;
+      return;
+    }
 
     const prevFootY = prevY + r.h;
     const footY = r.y + r.h;
     const surfaceY = pipeSurfaceY(pipe, cx);
 
-    // ★ 重要：歩いてるだけで吸い込まれないように、"空中からの落下" でのみ着地可
-    const wasAboveGround = prevFootY < (state.groundTop - 2); // 前フレームで地面より上
+    // 1) already riding: follow surface (no fall)
+    if (r.onPipe) {
+      r.y = surfaceY - r.h;
+      r.vy = 0;
+      return;
+    }
+
+    // 2) not riding: can land only when falling from above ground
+    const wasAboveGround = prevFootY < (state.groundTop - 2);
     const crossing = (prevFootY <= surfaceY) && (footY >= surfaceY);
+
     if (crossing && r.vy >= 0 && wasAboveGround) {
       r.y = surfaceY - r.h;
       r.vy = 0;
@@ -731,7 +748,7 @@
       return;
     }
 
-    // occasionally hop (avoid hopping if currently on pipe to keep ride)
+    // occasional hop (avoid hopping while onPipe)
     if (!r.onPipe && (r.onGround || r.onRail) && Math.random() < 0.04) {
       tryJump(r);
       r.aiCooldown = rand(0.55, 0.9);
@@ -792,8 +809,11 @@
     // rail ride
     resolveRailRide(r, prevY);
 
-    // pipe ride (jump-to-ride)
+    // pipe ride (jump-to-ride + stick)
     resolvePipeRide(r, prevY);
+
+    // ★ if onPipe, ensure not overridden by ground
+    if (r.onPipe) r.onGround = false;
 
     // ground collision (only if not on rail/pipe)
     if (!r.onRail && !r.onPipe) {
@@ -839,7 +859,7 @@
     if (allFinished()) showResult();
   }
 
-  // ====== Main Loop (logic only; render in Part2) ======
+  // ====== Main Loop (render in Part3) ======
   function step(ms) {
     const dt = clamp((ms - state.lastMs) / 1000, 0, 0.033);
     state.lastMs = ms;
@@ -882,15 +902,14 @@
     }
 
     updateGaugeUI();
-
-    // render is in Part2
     render();
 
     requestAnimationFrame(step);
   }
 
-  /* === PART2 START === */
- /* === PART2 CONTINUE === */
+  /* === PART 3 START === */
+ // game.js (PART 3/3)
+// Part2の末尾にこのPart3を追記してください。これで完成です。
 
   // ====== Render ======
   function beginLogical() {
@@ -922,14 +941,12 @@
     const stImg = ASSETS.st.img;
     const y = state.groundTop;
 
-    // base ground shade
     ctx.fillStyle = "rgba(0,0,0,0.22)";
     ctx.fillRect(0, y, CONFIG.logicalW, state.groundH);
 
     if (stImg) {
       const tileW = state.stTileW;
       const tileH = state.groundH;
-
       const scroll = state.cameraX;
       let startX = -(((scroll % tileW) + tileW) % tileW);
 
@@ -938,7 +955,6 @@
       }
     }
 
-    // ground line
     ctx.fillStyle = "rgba(255,255,255,0.10)";
     ctx.fillRect(0, y, CONFIG.logicalW, 1);
   }
@@ -994,7 +1010,7 @@
 
       ctx.drawImage(p.img, 0, 0, p.img.width, p.img.height, sx, p.y, p.w, p.h);
 
-      // (optional) extremely subtle hint lines at MOB boost zones (no text)
+      // subtle hint at MOB boost zones (no text)
       ctx.save();
       ctx.globalAlpha = 0.10;
       ctx.fillStyle = "rgba(255,255,255,0.9)";
@@ -1002,8 +1018,6 @@
       const zl = (p.w * CONFIG.mobZonePosL) - zw * 0.5;
       const zr = (p.w * CONFIG.mobZonePosR) - zw * 0.5;
       const rimY = p.y + p.lipY;
-
-      // tiny highlight on rim
       ctx.fillRect(sx + zl, rimY - 2, zw, 4);
       ctx.fillRect(sx + zr, rimY - 2, zw, 4);
       ctx.restore();
@@ -1029,7 +1043,6 @@
 
     if (x < -160 || x > CONFIG.logicalW + 160) return;
 
-    // shadow base: if on rail -> under runner; else -> ground line
     const shadowBaseY = (r.onRail || r.onPipe) ? (y + r.h + 8) : (state.groundTop + 6);
     const shadowAlpha = (r.onGround || r.onRail || r.onPipe) ? 0.26 : 0.14;
 
@@ -1041,7 +1054,7 @@
     ctx.ellipse(x + r.w / 2, shadowBaseY, (r.w * 0.72) / 2, 6, 0, 0, Math.PI * 2);
     ctx.fill();
 
-    // board placement: "character is riding"
+    // board placement (character rides)
     const boardW = r.w * 1.05;
     const boardH = r.h * 0.45;
     const boardX = x + (r.w - boardW) * 0.5;
@@ -1059,7 +1072,7 @@
       ctx.fillRect(x, y, r.w, r.h);
     }
 
-    // speed effect (boost/rail/pipe)
+    // speed effect
     if (r.boostTimer > 0 || r.onRail || r.onPipe) {
       const intensity = r.onRail ? 0.35 : clamp((r.boostPower || 0) / CONFIG.jumpBoostSpeedAdd, 0.25, 1.0);
       ctx.globalAlpha = r.alpha * clamp(0.14 + intensity * 0.28, 0.14, 0.52);
@@ -1108,7 +1121,6 @@
   }
 
   function render() {
-    // clear full canvas
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -1117,13 +1129,10 @@
 
     drawSky();
     drawStage();
-
-    // order: puddle (on ground) -> halfpipe (on ground but tall) -> rail (above ground)
     drawPuddles();
     drawHalfpipes();
     drawRails();
 
-    // runners: ghosts first, player last
     for (let i = 0; i < state.runners.length; i++) {
       if (state.runners[i].isPlayer) continue;
       drawRunner(state.runners[i]);
@@ -1131,31 +1140,6 @@
     drawRunner(state.runners[state.playerIndex]);
 
     drawHUDLogical();
-  }
-
-  // ====== Result ======
-  function showResult() {
-    state.phase = GAME.PHASE.RESULT;
-
-    const list = state.runners
-      .map(r => ({ name: r.name, t: r.finishTime, isPlayer: r.isPlayer }))
-      .sort((a, b) => a.t - b.t);
-
-    let html = "";
-    for (let i = 0; i < list.length; i++) {
-      const row = list[i];
-      const rank = i + 1;
-      html += `
-        <div class="row">
-          <div class="name">${rank}. ${row.name}${row.isPlayer ? " (YOU)" : ""}</div>
-          <div class="time">${formatTime(row.t)}</div>
-          <div class="rank">#${rank}</div>
-        </div>
-      `;
-    }
-
-    setOverlay("RESULT", `GOAL ${CONFIG.GOAL_M}m`);
-    showPanel(html);
   }
 
   // ====== Boot / Restart ======
