@@ -1,500 +1,408 @@
 (() => {
-  "use strict";
+  'use strict';
 
   // =========================
-  // MOB STREET - 1P RUN V3.1
-  // - png.png を一切使用しない（PL1.png / PL2.png）
-  // - 地面Yを安定化（操作エリアと分離）
-  // - ガードレールは必ず出る（一定間隔）
+  // V2 - stable baseline
   // =========================
+  const VERSION = 'V2';
 
-  const VERSION = "V3.1";
+  // --- DOM
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d', { alpha: true });
 
-  // ---- Asset names (NO png.png) ----
-  const ASSET_LIST = {
-    PL1: "PL1.png",
-    PL2: "PL2.png",
-    REDSK: "redsk.png",
-    STAGE: "st.png",
-    GARD: "gardw.png",
-  };
+  const elLoading = document.getElementById('loading');
+  const elCenterBadge = document.getElementById('centerBadge');
+  const elBoostTxt = document.getElementById('boostTxt');
+  const elBoostMaxTxt = document.getElementById('boostMaxTxt');
+  const elPlayerTag = document.getElementById('playerTag');
 
-  // ---- Canvas / ctx ----
-  const canvas = document.getElementById("game");
-  const ctx = canvas.getContext("2d", { alpha: true });
+  const btnJump = document.getElementById('btnJump');
+  const btnBoost = document.getElementById('btnBoost');
 
-  // ---- HUD elements ----
-  const elVer = document.getElementById("verBadge");
-  const elBoostCount = document.getElementById("boostCount");
-  const elBoostMax = document.getElementById("boostMax");
-  const elMsg = document.getElementById("msg");
+  // --- Assets (V2: png.png は使わない)
+  const ASSET_LIST = [
+    'PL1.png',
+    'PL2.png',
+    'redsk.png',
+    'st.png',
+    'gardw.png',
+    'ringtap.png',
+    'hpr.png',
+    'hpg.png',
+    'HA.png',
+    'dokan.png',
+    'or.png',
+    'dan.png'
+  ];
 
-  elVer.textContent = VERSION;
+  const IMG = Object.create(null);
 
-  // ---- Controls ----
-  const btnJump = document.getElementById("btnJump");
-  const btnBoost = document.getElementById("btnBoost");
-  const btnJumpBoost = document.getElementById("btnJumpBoost");
-
-  // Prevent iOS selection/zoom/scroll on buttons area
-  const preventTouch = (e) => { e.preventDefault(); };
-  [btnJump, btnBoost, btnJumpBoost, canvas].forEach(el => {
-    el.addEventListener("touchstart", preventTouch, { passive: false });
-    el.addEventListener("touchmove", preventTouch, { passive: false });
-    el.addEventListener("touchend", preventTouch, { passive: false });
-  });
-
-  // ---- Game constants ----
-  const BOOST_MAX = 5;
-  const BOOST_REGEN_SEC = 5.0;
-  const BASE_SPEED = 190;            // baseline
-  const BOOST_SPEED_ADD = 160;       // one boost push
-  const BOOST_DUR = 0.9;             // seconds
-  const GRAVITY = 2200;              // px/s^2
-  const JUMP_VY = 860;               // px/s
-  const DOUBLE_JUMP_VY = 760;        // px/s
-  const PLAYER_X_RATIO = 0.28;       // more left
-  const SPRITE_TARGET = 48;          // approx 48x48 composition target
-
-  // ---- World layout ----
-  // We keep a stable "world ground line" inside the play area.
-  // Ground Y is computed from canvas height, leaving a safe margin so player never sinks into UI.
-  function computeGroundY() {
-    // 18% from bottom of play area -> stable across devices
-    // (tuned so st.png ground looks correct and player stays visible)
-    return Math.round(canvas.height * 0.74);
-  }
-
-  // ---- Game state ----
-  const state = {
-    assets: {},
-    assetsReady: false,
-
-    tPrev: 0,
-    time: 0,
-
-    groundY: 0,
-
-    // Player physics
-    px: 0,
-    py: 0,
-    vy: 0,
-    onGround: true,
-    canDouble: true,
-
-    // Speed
-    speed: BASE_SPEED,
-    boostStock: 0,
-    boostTimer: 0,
-    regenTimer: 0,
-
-    // Stage tiling
-    stageScroll: 0,
-
-    // Obstacles / gimmicks (V3.1 uses guardrail only, stable)
-    guards: [],
-
-    // Spawn pacing
-    nextGuardDist: 260,     // meters-ish (uses dist units)
-    dist: 0,
-
-    // Simple start fade (to avoid black overlay issue)
-    startFade: 0,
-
-    // Debug message
-    lastWarn: "",
-  };
-
-  // ---- Helpers ----
-  function showMsg(txt) {
-    if (!txt) {
-      elMsg.style.display = "none";
-      elMsg.textContent = "";
-      return;
-    }
-    elMsg.style.display = "block";
-    elMsg.textContent = txt;
-  }
-
-  function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
-
-  // Convert "game distance" like your previous dist metric
-  // We keep dist increasing roughly with speed.
-  function advanceDistance(dt) {
-    // scale factor so speed ~190 gives decent progression
-    const k = 0.08;
-    state.dist += state.speed * dt * k;
-  }
-
-  // ---- Asset loader (robust) ----
   function loadImage(src) {
     return new Promise((resolve) => {
       const img = new Image();
       img.onload = () => resolve({ ok: true, img, src });
       img.onerror = () => resolve({ ok: false, img: null, src });
-      // cache-bust a little to avoid stale images on Pages
-      img.src = src + "?v=" + encodeURIComponent(VERSION);
+      // cache bust for GH Pages slow propagation cases:
+      img.src = src + (src.includes('?') ? '&' : '?') + 'v=' + Date.now();
     });
   }
 
   async function loadAssets() {
-    const entries = Object.entries(ASSET_LIST);
-    const results = await Promise.all(entries.map(([k, v]) => loadImage(v)));
-    const missing = [];
-    results.forEach((r, i) => {
-      const key = entries[i][0];
-      if (r.ok) state.assets[key] = r.img;
-      else missing.push(entries[i][1]);
-    });
-
-    state.assetsReady = true;
-
-    if (missing.length) {
-      showMsg(
-        "画像が見つからない: " + missing.join(", ") +
-        "\n（ファイル名が一致しているか確認）"
-      );
-    } else {
-      showMsg("");
+    const results = await Promise.all(ASSET_LIST.map(loadImage));
+    for (const r of results) {
+      if (r.ok) IMG[r.src.split('?')[0]] = r.img;
+      // missing images are allowed; we’ll draw placeholders instead
     }
   }
 
-  // ---- Resize: make canvas match playArea exactly ----
-  function resizeCanvas() {
-    const playArea = document.getElementById("playArea");
-    const rect = playArea.getBoundingClientRect();
-
-    // device pixel ratio for crispness
+  // --- Resize: canvas fits play area exactly (no black side bars)
+  let viewW = 720, viewH = 900;
+  function resizeCanvasToCSS() {
+    const rect = canvas.getBoundingClientRect();
     const dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
-
-    canvas.width = Math.floor(rect.width * dpr);
-    canvas.height = Math.floor(rect.height * dpr);
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-    // Update world ground
-    state.groundY = computeGroundY();
-
-    // Reposition player safely
-    state.px = Math.round((rect.width) * PLAYER_X_RATIO);
-    // py is sprite base line (feet) -> set on ground
-    state.py = state.groundY;
+    viewW = Math.max(2, Math.floor(rect.width * dpr));
+    viewH = Math.max(2, Math.floor(rect.height * dpr));
+    canvas.width = viewW;
+    canvas.height = viewH;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.imageSmoothingEnabled = false;
   }
 
-  window.addEventListener("resize", resizeCanvas);
+  window.addEventListener('resize', () => resizeCanvasToCSS(), { passive: true });
 
-  // ---- Drawing helpers ----
-  function drawBg() {
-    // CSS gradient already, but we clear with transparent to keep it
-    ctx.clearRect(0, 0, canvas.clientWidth, canvas.clientHeight);
+  // =========================
+  // Game constants (V2)
+  // =========================
+  const BOOST_MAX = 5;
+  const BOOST_REGEN_SEC = 5;
+  const BASE_SPEED = 190;           // matches your stable feel
+  const BOOST_SPEED_ADD = 160;      // boost burst
+  const BOOST_DURATION = 0.75;      // seconds (NOT permanent)
+  const GRAVITY = 2200;             // px/s^2
+  const JUMP_VY = 920;              // px/s
+
+  // Ground placement (play area only)
+  function groundY() {
+    // ground band area: keep character safely above control area
+    return Math.floor(viewH * 0.72);
   }
 
-  function drawStage(dt) {
-    const img = state.assets.STAGE;
-    if (!img) return;
+  // =========================
+  // Entities
+  // =========================
+  const player = {
+    x: 0,
+    y: 0,
+    vx: 0,
+    vy: 0,
+    onGround: true,
+    jumping: false,
+  };
 
-    // Tile horizontally
-    const cw = canvas.clientWidth;
-    const ch = canvas.clientHeight;
+  // Boost state
+  let boostStock = 0;
+  let boostTimer = 0;      // remaining boost time
+  let regenTimer = 0;
 
-    // stage baseline: align stage bottom to groundY with a small offset
-    const scale = 1; // draw at native px-to-css scale
-    const iw = img.width * scale;
-    const ih = img.height * scale;
+  // World scroll (meters-ish)
+  let dist = 0; // for future
+  let speed = 0;
 
-    // Set stage Y so that its "ground line" feels consistent.
-    // We anchor the bottom of stage near groundY + 58px (tuned for your st.png look).
-    const stageY = Math.round(state.groundY - ih * 0.55);
+  // Obstacles (V2: simple guardrail spawn only)
+  const guardrails = [];
+  let nextGuardAt = 180; // meters-ish spacing
 
-    state.stageScroll = (state.stageScroll + state.speed * dt * 0.35) % iw;
+  // Utility
+  function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
 
-    // Draw multiple tiles
-    const startX = -state.stageScroll;
-    for (let x = startX; x < cw + iw; x += iw) {
-      ctx.drawImage(img, x, stageY, iw, ih);
-    }
-  }
-
-  function drawGuard(guard) {
-    const img = state.assets.GARD;
-    if (!img) return;
-    // guard placed slightly above ground so you "jump onto it"
-    const y = Math.round(state.groundY - guard.h);
-    ctx.drawImage(img, guard.x, y, guard.w, guard.h);
-  }
-
-  function drawPlayer() {
-    const plImg = state.onGround ? state.assets.PL1 : state.assets.PL2;
-    const skImg = state.assets.REDSK;
-
-    const cw = canvas.clientWidth;
-
-    // If missing images, draw fallback box so player never "disappears"
-    const want = SPRITE_TARGET;
-    const px = Math.round(state.px);
-    const baseY = Math.round(state.py);
-
-    // Determine sizes
-    let plW = want, plH = want;
-    let skW = want, skH = want;
-
-    if (plImg) {
-      const s = want / Math.max(plImg.width, plImg.height);
-      plW = Math.round(plImg.width * s);
-      plH = Math.round(plImg.height * s);
-    }
-    if (skImg) {
-      const s = want / Math.max(skImg.width, skImg.height);
-      skW = Math.round(skImg.width * s);
-      skH = Math.round(skImg.height * s);
-    }
-
-    // Compose: skateboard slightly lower, player above it (riding)
-    const skX = px - Math.round(skW * 0.52);
-    const skY = baseY - Math.round(skH * 0.30);
-
-    const plX = px - Math.round(plW * 0.55);
-    const plY = skY - Math.round(plH * 0.78);
-
-    if (skImg) ctx.drawImage(skImg, skX, skY, skW, skH);
-    else {
-      ctx.fillStyle = "rgba(255,80,80,0.85)";
-      ctx.fillRect(skX, skY, skW, skH);
-    }
-
-    if (plImg) ctx.drawImage(plImg, plX, plY, plW, plH);
-    else {
-      ctx.fillStyle = "rgba(255,255,255,0.6)";
-      ctx.fillRect(plX, plY, plW, plH);
-    }
-
-    // small label above head
-    ctx.font = "12px sans-serif";
-    ctx.fillStyle = "rgba(255,255,255,0.85)";
-    ctx.strokeStyle = "rgba(0,0,0,0.45)";
-    ctx.lineWidth = 4;
-    const label = "プレイヤー";
-    const lx = px - 22;
-    const ly = plY - 8;
-    ctx.strokeText(label, lx, ly);
-    ctx.fillText(label, lx, ly);
-  }
-
-  // ---- Collision: player feet line vs guard top ----
-  function updateGuards(dt) {
-    // Move existing guards left
-    for (const g of state.guards) {
-      g.x -= state.speed * dt * 0.35;
-    }
-    // Remove offscreen
-    state.guards = state.guards.filter(g => g.x + g.w > -50);
-
-    // Spawn by distance (guaranteed)
-    if (state.dist >= state.nextGuardDist) {
-      spawnGuard();
-      // Next spawn: not too frequent
-      state.nextGuardDist += 220 + Math.random() * 220;
-    }
-  }
-
-  function spawnGuard() {
-    const img = state.assets.GARD;
-    const cw = canvas.clientWidth;
-
-    // If image missing, still spawn with fallback size to keep logic stable
-    const baseW = img ? img.width : 160;
-    const baseH = img ? img.height : 60;
-
-    // Scale guard lower (user wanted lower)
-    const targetH = Math.round(SPRITE_TARGET * 0.85);
-    const s = targetH / baseH;
-
-    const w = Math.round(baseW * s);
-    const h = Math.round(baseH * s);
-
-    state.guards.push({
-      x: cw + 30,
-      w, h,
-      // ride boost
-      rideBoost: 40,
-    });
-  }
-
-  function resolveRide(dt) {
-    // Determine if player is on top of a guard (simple AABB with feet line)
-    const playerFeetY = state.py;
-    const playerX = state.px;
-
-    let riding = null;
-    for (const g of state.guards) {
-      const topY = state.groundY - g.h;
-      const withinX = (playerX > g.x + 4) && (playerX < g.x + g.w - 4);
-      const nearTop = Math.abs(playerFeetY - topY) <= 8;
-      // if player descending and hits top, snap
-      if (withinX && (playerFeetY >= topY - 10) && (playerFeetY <= topY + 10) && state.vy >= 0) {
-        riding = { g, topY };
-        break;
-      }
-      // also keep riding if already snapped
-      if (withinX && nearTop && state.vy === 0) {
-        riding = { g, topY };
-        break;
-      }
-    }
-
-    if (riding) {
-      // Snap onto guard top
-      state.py = riding.topY;
-      state.vy = 0;
-      state.onGround = true;
-      state.canDouble = true;
-
-      // Slight speed-up while riding
-      state.speed = Math.max(state.speed, BASE_SPEED + riding.g.rideBoost);
-    } else {
-      // If below ground, snap to ground
-      if (state.py > state.groundY) {
-        state.py = state.groundY;
-        state.vy = 0;
-        state.onGround = true;
-        state.canDouble = true;
-      }
-    }
-  }
-
-  // ---- Input ----
+  // =========================
+  // Input
+  // =========================
   function doJump() {
-    if (!state.assetsReady) return;
-
-    if (state.onGround) {
-      state.vy = -JUMP_VY;
-      state.onGround = false;
-      state.canDouble = true;
-      return;
-    }
-    if (state.canDouble) {
-      state.vy = -DOUBLE_JUMP_VY;
-      state.canDouble = false;
-    }
+    if (!player.onGround) return;
+    player.onGround = false;
+    player.vy = -JUMP_VY;
   }
 
   function doBoost() {
-    if (!state.assetsReady) return;
-    if (state.boostStock <= 0) return;
-
-    state.boostStock -= 1;
-    state.boostTimer = BOOST_DUR;
-    updateHud();
+    if (boostStock <= 0) return;
+    boostStock--;
+    boostTimer = BOOST_DURATION;
+    updateHUD();
   }
 
-  btnJump.addEventListener("click", doJump);
-  btnBoost.addEventListener("click", doBoost);
+  btnJump.addEventListener('pointerdown', (e) => { e.preventDefault(); doJump(); }, { passive: false });
+  btnBoost.addEventListener('pointerdown', (e) => { e.preventDefault(); doBoost(); }, { passive: false });
 
-  // keyboard (PC)
-  window.addEventListener("keydown", (e) => {
-    if (e.code === "Space") { e.preventDefault(); doJump(); }
-    if (e.code === "KeyB") { e.preventDefault(); doBoost(); }
-  });
+  // Keyboard (PC)
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') { e.preventDefault(); doJump(); }
+    if (e.code === 'KeyB') { e.preventDefault(); doBoost(); }
+  }, { passive: false });
 
-  // ---- Update HUD ----
-  function updateHud() {
-    elBoostCount.textContent = String(state.boostStock);
-    elBoostMax.textContent = String(BOOST_MAX);
+  // Prevent iOS selection / double-tap zoom
+  document.addEventListener('gesturestart', (e) => e.preventDefault(), { passive: false });
+
+  // =========================
+  // Spawning
+  // =========================
+  function spawnGuardrail() {
+    // Guardrail sits on ground; rideable platform
+    const gy = groundY();
+    const img = IMG['gardw.png'] || null;
+    const w = img ? img.width : 240;
+    const h = img ? img.height : 70;
+
+    guardrails.push({
+      x: viewW + 40,
+      y: gy - h + 6,
+      w, h,
+      img,
+      speedAdd: 40,     // V2: “少し加速”は入れず、安定優先（V3で追加）
+      active: true
+    });
   }
 
-  // ---- Main update loop ----
-  function tick(ts) {
-    const t = ts * 0.001;
-    const dt = Math.min(0.033, state.tPrev ? (t - state.tPrev) : 0.016);
-    state.tPrev = t;
-    state.time += dt;
+  function updateSpawns() {
+    // spawn by distance
+    if (dist >= nextGuardAt) {
+      spawnGuardrail();
+      // spacing: not too frequent
+      nextGuardAt += 260 + Math.random() * 240;
+    }
+  }
 
-    // regen boost
-    if (state.assetsReady) {
-      state.regenTimer += dt;
-      while (state.regenTimer >= BOOST_REGEN_SEC) {
-        state.regenTimer -= BOOST_REGEN_SEC;
-        if (state.boostStock < BOOST_MAX) state.boostStock += 1;
-        updateHud();
+  // =========================
+  // Physics / Update
+  // =========================
+  let lastT = performance.now();
+
+  function update(dt) {
+    // Regen boost
+    regenTimer += dt;
+    if (regenTimer >= BOOST_REGEN_SEC) {
+      const n = Math.floor(regenTimer / BOOST_REGEN_SEC);
+      regenTimer -= n * BOOST_REGEN_SEC;
+      boostStock = clamp(boostStock + n, 0, BOOST_MAX);
+      updateHUD();
+    }
+
+    // Speed
+    const boostNow = boostTimer > 0 ? 1 : 0;
+    boostTimer = Math.max(0, boostTimer - dt);
+
+    speed = BASE_SPEED + (boostNow ? BOOST_SPEED_ADD : 0);
+
+    // Move world
+    dist += speed * dt * 0.1; // scale to “meter-ish”
+    updateSpawns();
+
+    // Player base position (left side)
+    player.x = Math.floor(viewW * 0.20);
+
+    // Gravity
+    player.vy += GRAVITY * dt;
+    player.y += player.vy * dt;
+
+    const gy = groundY();
+    // Default ground collision
+    if (player.y >= gy) {
+      player.y = gy;
+      player.vy = 0;
+      player.onGround = true;
+    } else {
+      player.onGround = false;
+    }
+
+    // Move obstacles left
+    for (const g of guardrails) {
+      g.x -= speed * dt;
+      if (g.x + g.w < -80) g.active = false;
+    }
+
+    // Platform collision (stand on top)
+    // If player falls onto guardrail top, land on it
+    for (const g of guardrails) {
+      if (!g.active) continue;
+      const px = player.x;
+      const py = player.y;
+      const top = g.y;
+      const left = g.x;
+      const right = g.x + g.w;
+
+      // standing check: player near top and within x-range
+      if (player.vy >= 0 && px >= left + 8 && px <= right - 8) {
+        // player's "feet" point is (x, y)
+        const nextY = py;
+        if (nextY >= top && nextY <= top + 22) {
+          player.y = top;
+          player.vy = 0;
+          player.onGround = true;
+        }
       }
     }
 
-    // boost effect
-    if (state.boostTimer > 0) {
-      state.boostTimer -= dt;
-      state.speed = BASE_SPEED + BOOST_SPEED_ADD;
-      if (state.boostTimer <= 0) {
-        state.boostTimer = 0;
-        // Return to base (do not stick forever)
-        state.speed = BASE_SPEED;
+    // Cleanup
+    for (let i = guardrails.length - 1; i >= 0; i--) {
+      if (!guardrails[i].active) guardrails.splice(i, 1);
+    }
+
+    // Player tag follows player
+    elPlayerTag.style.left = Math.max(10, Math.min(window.innerWidth - 120, (player.x / viewW) * window.innerWidth - 16)) + 'px';
+    elPlayerTag.style.top = Math.max(60, (player.y / viewH) * (document.getElementById('playWrap').clientHeight) - 56) + 'px';
+  }
+
+  // =========================
+  // Render
+  // =========================
+  function drawBackground() {
+    // If HA.png exists, draw it as a single stage background (not loop)
+    const bg = IMG['HA.png'];
+    if (bg) {
+      // cover
+      const cw = viewW, ch = viewH;
+      const iw = bg.width, ih = bg.height;
+      const s = Math.max(cw / iw, ch / ih);
+      const dw = iw * s, dh = ih * s;
+      const dx = (cw - dw) * 0.5;
+      const dy = (ch - dh) * 0.5;
+      ctx.drawImage(bg, dx, dy, dw, dh);
+      return;
+    }
+    // fallback gradient already from CSS; draw nothing
+  }
+
+  function drawGround() {
+    const st = IMG['st.png'];
+    const gy = groundY();
+
+    if (st) {
+      // tile horizontally
+      const tileH = st.height;
+      const tileY = gy - tileH + 6;
+      const tileW = st.width;
+
+      // compute a scroll offset from dist
+      const scroll = Math.floor((dist * 6) % tileW);
+      for (let x = -scroll; x < viewW + tileW; x += tileW) {
+        ctx.drawImage(st, x, tileY);
       }
     } else {
-      // If riding guard, resolveRide can raise speed slightly; otherwise base
-      if (state.speed < BASE_SPEED) state.speed = BASE_SPEED;
-      if (state.speed > BASE_SPEED + 80) {
-        // cap small ride effects when not boosting
-        state.speed = BASE_SPEED + 80;
+      // placeholder
+      ctx.fillStyle = 'rgba(0,0,0,0.25)';
+      ctx.fillRect(0, gy - 40, viewW, 120);
+    }
+  }
+
+  function drawGuardrails() {
+    for (const g of guardrails) {
+      if (g.img) {
+        ctx.drawImage(g.img, Math.floor(g.x), Math.floor(g.y));
+      } else {
+        ctx.fillStyle = 'rgba(255,255,255,0.6)';
+        ctx.fillRect(Math.floor(g.x), Math.floor(g.y), g.w, g.h);
       }
     }
+  }
 
-    // physics
-    state.vy += GRAVITY * dt;
-    state.py += state.vy * dt;
+  function drawPlayer() {
+    const pl = player.onGround ? IMG['PL1.png'] : (IMG['PL2.png'] || IMG['PL1.png']);
+    const sk = IMG['redsk.png'];
 
-    // If passed below ground, snap
-    if (state.py >= state.groundY) {
-      state.py = state.groundY;
-      state.vy = 0;
-      state.onGround = true;
-      state.canDouble = true;
+    // desired size: around 48x48 combined (approx)
+    const target = Math.floor(Math.min(viewW, viewH) * 0.085); // ~48 on typical phone
+    const cx = player.x;
+    const cy = player.y;
+
+    // skateboard
+    if (sk) {
+      const sw = target;
+      const sh = Math.floor(target * (sk.height / sk.width));
+      ctx.drawImage(sk, Math.floor(cx - sw * 0.45), Math.floor(cy - sh * 0.35), sw, sh);
+    } else {
+      ctx.fillStyle = 'rgba(255,0,0,0.8)';
+      ctx.fillRect(Math.floor(cx - 18), Math.floor(cy - 12), 36, 10);
     }
 
-    // distance & spawns
-    advanceDistance(dt);
-    updateGuards(dt);
-
-    // ride resolution (must happen after moving)
-    resolveRide(dt);
-
-    // --- draw ---
-    drawBg();
-    drawStage(dt);
-
-    // draw guards
-    for (const g of state.guards) drawGuard(g);
-
-    // draw player (never disappears: fallback box)
-    drawPlayer();
-
-    // start fade (keep it minimal, no black screen)
-    if (state.startFade < 0.2) state.startFade += dt;
-    // no overlay
-
-    requestAnimationFrame(tick);
+    // player body (slightly above board)
+    if (pl) {
+      const pw = target;
+      const ph = Math.floor(target * (pl.height / pl.width));
+      ctx.drawImage(pl, Math.floor(cx - pw * 0.55), Math.floor(cy - ph * 0.95), pw, ph);
+    } else {
+      ctx.fillStyle = 'rgba(255,255,255,0.8)';
+      ctx.fillRect(Math.floor(cx - 14), Math.floor(cy - 44), 28, 32);
+    }
   }
 
-  // ---- Init ----
-  async function init() {
-    resizeCanvas();
-    updateHud();
-    showMsg("Loading... 画像を読み込んでいます");
+  function render() {
+    ctx.clearRect(0, 0, viewW, viewH);
+    drawBackground();
+    drawGround();
+    drawGuardrails();
+    drawPlayer();
+  }
 
+  // =========================
+  // HUD
+  // =========================
+  function updateHUD() {
+    elBoostTxt.textContent = String(boostStock);
+    elBoostMaxTxt.textContent = String(BOOST_MAX);
+  }
+
+  function hideCenterBadgeSoon() {
+    setTimeout(() => {
+      if (elCenterBadge) elCenterBadge.style.display = 'none';
+    }, 900);
+  }
+
+  // =========================
+  // Loop
+  // =========================
+  function loop(t) {
+    const dt = clamp((t - lastT) / 1000, 0, 1 / 20);
+    lastT = t;
+
+    update(dt);
+    render();
+
+    requestAnimationFrame(loop);
+  }
+
+  // =========================
+  // Boot
+  // =========================
+  async function boot() {
+    // set visible version
+    document.getElementById('verPill').textContent = VERSION;
+    if (elCenterBadge) elCenterBadge.textContent = VERSION;
+
+    resizeCanvasToCSS();
     await loadAssets();
 
-    // Set player at ground
-    state.py = state.groundY;
-    state.vy = 0;
-    state.onGround = true;
+    // Initialize player
+    player.y = groundY();
+    player.vy = 0;
+    player.onGround = true;
 
-    // Start with 0 boost as requested
-    state.boostStock = 0;
-    updateHud();
+    // V2: boost start 0/5
+    boostStock = 0;
+    regenTimer = 0;
+    boostTimer = 0;
+    updateHUD();
 
-    // Ensure at least one guard appears early so "出ない" にならない
-    state.nextGuardDist = 80;
+    // Start spawning baseline
+    dist = 0;
+    nextGuardAt = 180;
 
-    showMsg(state.assets.PL1 ? "" : "PL1.png が読み込めていません（ファイル名確認）");
-    requestAnimationFrame(tick);
+    // Hide loading
+    elLoading.style.display = 'none';
+    hideCenterBadgeSoon();
+
+    lastT = performance.now();
+    requestAnimationFrame(loop);
   }
 
-  init();
+  boot();
 })();
