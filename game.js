@@ -924,6 +924,125 @@ function render(){
 }
 
 /* === PART5 START === */
+   // game.js v6.2  PART 5 / 5
+// LOOP / COUNTDOWN / NEXT / BOOT
+// - 安定したメインループ
+// - カウントダウン → レース開始
+// - RESULT 表示後に NEXT RACE で進行
+// - v6.2（contain描画）前提
+
+/* =======================
+   COUNTDOWN
+======================= */
+function updateCountdown(dt){
+  state.countdown -= dt;
+  if(state.countdown <= 0){
+    state.phase = "run";
+  }
+}
+
+/* =======================
+   UPDATE
+======================= */
+function update(dt){
+  if(state.phase === "countdown"){
+    updateCountdown(dt);
+    updateRank();
+    return;
+  }
+  if(state.phase === "run"){
+    updateRun(dt);
+    return;
+  }
+  // result中は描画のみ（NEXT待ち）
+}
+
+/* =======================
+   MAIN LOOP
+======================= */
+function loop(t){
+  const dt = Math.min((t - state.lastTime) / 1000, 0.033);
+  state.lastTime = t;
+
+  if(state.phase !== "loading"){
+    update(dt);
+  }
+  render();
+  requestAnimationFrame(loop);
+}
+
+/* =======================
+   NEXT RACE
+======================= */
+nextFixed.addEventListener("pointerdown", ()=>{
+  nextFixed.style.display = "none";
+
+  const nextIdx =
+    (state.raceIndex < CONFIG.RACES.length - 1)
+      ? state.raceIndex + 1
+      : 0;
+
+  initRace(nextIdx);
+  resetWorldForRace();
+  resetGround();
+
+  // 先頭から障害物が出るように一度スポーン
+  spawnWorld(0);
+
+  // ランナー初期化
+  for(const r of state.runners){
+    r.x = 0;
+    r.y = world.groundY - r.h;
+    r.vy = 0;
+    r.onGround = true;
+    r.onPipe = false;
+    r.pipeRef = null;
+    r.pipeT = 0;
+  }
+
+  state.time = 0;
+  state.countdown = 3;
+  state.phase = "countdown";
+});
+
+/* =======================
+   BOOT
+======================= */
+async function boot(){
+  try{
+    await bootCore();
+
+    // 初期レース
+    initRace(0);
+    resetWorldForRace();
+    resetGround();
+    spawnWorld(0);
+
+    for(const r of state.runners){
+      r.x = 0;
+      r.y = world.groundY - r.h;
+      r.vy = 0;
+      r.onGround = true;
+    }
+
+    state.time = 0;
+    state.countdown = 3;
+    state.phase = "countdown";
+
+    state.lastTime = performance.now();
+    requestAnimationFrame(loop);
+  }catch(e){
+    if(overlay){
+      overlay.style.display = "block";
+      if(overlayTitle) overlayTitle.textContent = "Error";
+      if(overlayMsg) overlayMsg.textContent = String(e);
+    }
+    console.error(e);
+  }
+}
+
+boot();
+})();
    
    
  
