@@ -1,9 +1,13 @@
-// game.js PART 1 / 5  (v5)
-// VERSION: v5
+// game.js PART 1 / 5  (v6 FULL FIXED PART1)
+// VERSION: v6
+// Fixes: black side bars (cover scale in PART4), countdown dark overlay (lighter in PART4),
+// race-to-race spawn reset (PART2 + initRace hook), pipe bigger (PART2), AI boost cooldown (PART3),
+// player label (PART4)
+
 (() => {
 "use strict";
 
-const VERSION = "v5";
+const VERSION = "v6";
 
 /* =======================
    DOM
@@ -56,10 +60,13 @@ const CONFIG = {
   RING_BOOST_ADD: 110,
   RING_BOOST_TIME: 0.55,
 
-  // 5秒 / 最大5 / 初期0
+  // プレイヤー：5秒 / 最大5 / 初期0
   STOCK_MAX: 5,
   STOCK_REGEN: 5.0,
   STOCK_START: 0,
+
+  // AI：ブースト最短間隔（体感の不公平感を抑える）
+  AI_BOOST_COOLDOWN: 5.0,
 
   RACES: [
     { name:"EASY",   goal:600,  start:26, survive:16 },
@@ -107,10 +114,7 @@ async function loadAssets(){
 
 /* =======================
    FIXED NEXT (JS only)
-   - Result後に必ず見えるボタン
 ======================= */
-function px(v){ return `${v}px`; }
-
 let nextFixed = document.getElementById("jsNextFixed");
 if(!nextFixed){
   nextFixed = document.createElement("button");
@@ -184,7 +188,8 @@ function createRunner(name,isPlayer,winRate){
     finished:false,
     finishTime:Infinity,
 
-    aiCd:rand(0.15,0.45)
+    aiCd:rand(0.15,0.45),
+    aiBoostCd:rand(0.0, CONFIG.AI_BOOST_COOLDOWN)
   };
 }
 
@@ -256,6 +261,7 @@ function initRace(idx){
     r.jumps=0;r.boostTimer=0;r.boostPower=0;r.slowTimer=0;
     r.rings=0;r.finished=false;r.finishTime=Infinity;
     r.aiCd=rand(0.15,0.45);
+    r.aiBoostCd=rand(0.0, CONFIG.AI_BOOST_COOLDOWN);
   }
 
   state.stock=CONFIG.STOCK_START;
@@ -265,6 +271,9 @@ function initRace(idx){
   state.phase="countdown";
 
   nextFixed.style.display="none";
+
+  // ★ステージ切替時に必ずスポーン状態を初期化（PART2で定義）
+  if(typeof resetWorldForRace === "function") resetWorldForRace();
 }
 
 /* =======================
@@ -289,18 +298,20 @@ async function bootCore(){
   if(overlayMsg) overlayMsg.textContent="assets";
   resizeCanvas();
   await loadAssets();
-
   if(overlay) overlay.style.display="none";
   state.lastTime=performance.now();
 }
 
 /* === PART2 START === */
- // game.js PART 2 / 5  (v5)
-// WORLD / SPAWN / GROUND (地面位置を“元の基準”に戻す)
+   // game.js PART 2 / 5  (v6)
+// WORLD / GROUND / SPAWN / PIPE SIZE FIX
 
+/* =======================
+   WORLD
+======================= */
 const world = {
-  groundH: 170,
-  groundTop: 0,
+  groundY: 0,
+  groundH: 0,
 
   rails: [],
   pipes: [],
@@ -310,458 +321,336 @@ const world = {
   nextRailX: 220,
   nextPipeX: 700,
   nextPuddleX: 260,
-  nextRingX: 220,
-
-  goalX: 0
+  nextRingX: 220
 };
 
+/* =======================
+   RESET WORLD PER RACE
+======================= */
+function resetWorldForRace(){
+  world.rails.length = 0;
+  world.pipes.length = 0;
+  world.puddles.length = 0;
+  world.rings.length = 0;
+
+  world.nextRailX = 220;
+  world.nextPipeX = 700;
+  world.nextPuddleX = 260;
+  world.nextRingX = 220;
+}
+
+/* =======================
+   GROUND
+======================= */
 function resetGround(){
-  const st = IMAGES.stage;
-  world.groundH = st ? Math.max(130, Math.min(210, st.height)) : 170;
+  // 画面サイズに対して常に安定する位置
+  world.groundH = 72;
+  world.groundY = CONFIG.LOGICAL_H - world.groundH;
+}
 
-  // ★元の基準：地面は画面下基準（安全域で上げない）
-  world.groundTop = CONFIG.LOGICAL_H - world.groundH;
+/* =======================
+   SPAWN CONTROLLER
+======================= */
+function spawnWorld(camX){
+  // ---- RAIL ----
+  if(camX + CONFIG.LOGICAL_W > world.nextRailX){
+    addRail(world.nextRailX);
+    world.nextRailX += rand(260,420);
+  }
 
-  for(const r of state.runners){
-    r.y = world.groundTop - r.h;
+  // ---- PIPE ----
+  if(camX + CONFIG.LOGICAL_W > world.nextPipeX){
+    addPipe(world.nextPipeX);
+    world.nextPipeX += rand(520,780);
+  }
+
+  // ---- PUDDLE ----
+  if(camX + CONFIG.LOGICAL_W > world.nextPuddleX){
+    addPuddle(world.nextPuddleX);
+    world.nextPuddleX += rand(260,380);
+  }
+
+  // ---- RING ----
+  if(camX + CONFIG.LOGICAL_W > world.nextRingX){
+    addRing(world.nextRingX);
+    world.nextRingX += rand(120,200);
   }
 }
 
-function setGoal(){
-  const race = CONFIG.RACES[state.raceIndex];
-  world.goalX = race.goal * CONFIG.PX_PER_M;
-}
-
-/* ---------- overlap ---------- */
-function overlapsAny(x,w,list,margin=40){
-  for(const o of list){
-    if(x < o.x + o.w + margin && x + w + margin > o.x){
-      return true;
-    }
-  }
-  return false;
-}
-
-/* ---------- rail ---------- */
+/* =======================
+   ADD OBJECTS
+======================= */
 function addRail(x){
   const img = IMAGES.rail;
-  const h = Math.floor(world.groundH * 0.34); // 低め
-  const w = img ? Math.floor(img.width * (h / img.height)) : 140;
-
-  // pipeと被らない
-  if(overlapsAny(x,w,world.pipes,120)){
-    world.nextRailX = x + w + 280;
-    return;
-  }
-
+  const w = img.width;
+  const h = img.height * 0.78; // 低めに
   world.rails.push({
-    x,
-    y: world.groundTop - h,
-    w,
-    h
+    x, y: world.groundY - h,
+    w, h
   });
-
-  world.nextRailX = x + w + rand(260,520);
 }
 
-/* ---------- pipe ---------- */
 function addPipe(x){
   const img = Math.random()<0.5 ? IMAGES.hpr : IMAGES.hpg;
-  if(!img) return;
 
-  const h = Math.floor(world.groundH * 0.34); // ガードレール同程度
-  const w = Math.floor(img.width * (h / img.height));
-
-  // railと被らない
-  if(overlapsAny(x,w,world.rails,120)){
-    world.nextPipeX = x + w + 380;
-    return;
-  }
+  // ★ v6：サイズ拡大（高さも横も）
+  const h = Math.floor(world.groundH * 0.48); // ←ここが重要
+  const scale = h / img.height;
+  const w = img.width * scale;
 
   world.pipes.push({
     x,
-    y: world.groundTop - h, // 地面の上
-    w,
-    h,
+    y: world.groundY - h,
+    w, h,
     img
   });
-
-  world.nextPipeX = x + w + rand(720,920);
 }
 
-/* ---------- puddle ---------- */
 function addPuddle(x){
-  const w = rand(48,96);
-  const h = 12;
   world.puddles.push({
     x,
-    y: world.groundTop + world.groundH * 0.20,
-    w,
-    h
+    y: world.groundY - 8,
+    w: rand(32,48),
+    h: 6
   });
-  world.nextPuddleX = x + w + rand(220,380);
 }
 
-/* ---------- ring (ground + air) ---------- */
 function addRing(x){
-  const s = 22;
-
-  // 地上 or 空中
   const air = Math.random() < 0.45;
-  const y = air
-    ? (world.groundTop - s - rand(80, 170))  // 空中
-    : (world.groundTop - s - rand(18, 36));  // 地上付近
-
+  const y = air ? world.groundY - rand(70,120) : world.groundY - 28;
   world.rings.push({
     x,
     y,
-    w: s,
-    h: s
+    r: 8,
+    taken: false
   });
-
-  world.nextRingX = x + rand(120,220);
 }
 
-/* ---------- spawn ---------- */
-function spawnWorld(px){
-  const ahead = px + 1050;
-  const behind = px - 460;
-
-  while(world.nextRingX < ahead)   addRing(world.nextRingX);
-  while(world.nextRailX < ahead)   addRail(world.nextRailX);
-  while(world.nextPipeX < ahead)   addPipe(world.nextPipeX);
-  while(world.nextPuddleX < ahead) addPuddle(world.nextPuddleX);
-
-  world.rings   = world.rings.filter(o=>o.x+o.w>behind);
-  world.rails   = world.rails.filter(o=>o.x+o.w>behind);
-  world.pipes   = world.pipes.filter(o=>o.x+o.w>behind-220);
-  world.puddles = world.puddles.filter(o=>o.x+o.w>behind);
-}
-
-/* ---------- countdown ---------- */
-function updateCountdown(dt){
-  state.countdown -= dt;
-  if(state.countdown <= 0){
-    state.phase = "run";
-  }
+/* =======================
+   COLLISION HELPERS
+======================= */
+function rectHit(ax,ay,aw,ah,bx,by,bw,bh){
+  return ax < bx+bw && ax+aw > bx && ay < by+bh && ay+ah > by;
 }
 
 /* === PART3 START === */
- // game.js PART 3 / 5  (v5)
-// PHYSICS / PIPE CLIMB / RING SMALL BOOST / AI
+   // game.js PART 3 / 5  (v6)
+// MOVE / JUMP / RAIL / PIPE (SLOPE FIX) / RING BOOST
 
-/* ---------- stock ---------- */
-function regenStock(dt){
-  state.stockTimer += dt;
-  while(state.stockTimer >= CONFIG.STOCK_REGEN){
-    state.stockTimer -= CONFIG.STOCK_REGEN;
-    if(state.stock < CONFIG.STOCK_MAX) state.stock++;
-  }
-}
-
-/* ---------- boost/jump ---------- */
-function applyBoost(r, add, t){
-  r.boostPower = add;
-  r.boostTimer = t;
-}
-function tryJump(r){
-  if(r.onGround || r.onRail || r.onPipe){
-    r.vy = -CONFIG.JUMP_V1;
-    r.jumps = 1;
-    r.onGround = r.onRail = r.onPipe = false;
-    return;
-  }
-  if(r.jumps < 2){
-    r.vy = -CONFIG.JUMP_V2;
-    r.jumps = 2;
-  }
-}
-
-/* ---------- rail collision ---------- */
-function updateRail(r, prevY){
-  const cx = r.x + r.w*0.5;
-  for(const rail of world.rails){
-    if(cx < rail.x || cx > rail.x + rail.w) continue;
-
-    const top = rail.y;
-    const prevFoot = prevY + r.h;
-    const foot = r.y + r.h;
-
-    if(prevFoot <= top && foot >= top && r.vy >= 0){
-      r.y = top - r.h;
-      r.vy = 0;
-      r.onRail = true;
-      r.onGround = false;
-      r.jumps = 0;
-      return true;
-    }
-  }
-  r.onRail = false;
-  return false;
-}
-
-/* ---------- pipe helpers ---------- */
-function pipeAt(cx){
-  for(const p of world.pipes){
-    if(cx >= p.x && cx <= p.x + p.w) return p;
-  }
-  return null;
-}
-function pipeSurfaceY(pipe, t){
-  const depth = pipe.h * 0.56;
-  return pipe.y + pipe.h*0.18 + depth * Math.sin(Math.PI * t);
-}
-
-/* ---------- pipe collision (climb & stick) ---------- */
-function updatePipe(r, prevY){
-  const cx = r.x + r.w*0.5;
-  const pipe = pipeAt(cx);
-
-  r.pipeRef = pipe;
-  r.pipeT = pipe ? clamp((cx - pipe.x)/pipe.w, 0, 1) : 0;
-
-  if(!pipe){
-    r.onPipe = false;
-    return false;
-  }
-
-  // edges are flat (rideable)
-  if(cx < pipe.x + 10 || cx > pipe.x + pipe.w - 10){
-    const top = pipe.y;
-    const prevFoot = prevY + r.h;
-    const foot = r.y + r.h;
-
-    if(prevFoot <= top && foot >= top && r.vy >= 0){
-      r.y = top - r.h;
-      r.vy = 0;
-      r.onPipe = false;
-      r.onGround = true;
-      r.jumps = 0;
-      return true;
-    }
-
-    if(r.wasOnPipe && r.vy >= -220){
-      r.y = top - r.h;
-      r.vy = 0;
-      r.onPipe = false;
-      r.onGround = true;
-      r.jumps = 0;
-      return true;
-    }
-    return false;
-  }
-
-  // stable two-foot sampling
-  const t1 = clamp((r.x + r.w*0.25 - pipe.x) / pipe.w, 0, 1);
-  const t2 = clamp((r.x + r.w*0.75 - pipe.x) / pipe.w, 0, 1);
-  const s1 = pipeSurfaceY(pipe, t1);
-  const s2 = pipeSurfaceY(pipe, t2);
-  const surface = Math.min(s1, s2);
-
-  const prevFoot = prevY + r.h;
-  const foot = r.y + r.h;
-
-  if(prevFoot <= surface && foot >= surface && r.vy >= 0){
-    r.y = surface - r.h;
-    r.vy = 0;
-    r.onPipe = true;
-    r.onGround = false;
-    r.jumps = 0;
-    return true;
-  }
-
-  // stick to pipe if previously on it
-  if(r.wasOnPipe){
-    const maxGap = 22;
-    if(foot <= surface + maxGap){
-      r.y = surface - r.h;
-      r.vy = 0;
-      r.onPipe = true;
-      r.onGround = false;
-      r.jumps = 0;
-      return true;
-    }
-  }
-
-  return false;
-}
-
-/* ---------- speed ---------- */
-function speedOf(r){
-  let s = CONFIG.BASE_SPEED * (r.isPlayer ? 1 : (0.95 + r.winRate*0.1));
-  if(r.boostTimer > 0) s += r.boostPower;
-  if(r.onRail) s += 65;
-  if(r.slowTimer > 0) s -= 70;
-
-  if(r.onPipe && r.pipeRef){
-    const t = r.pipeT;
-    const slope = Math.cos(Math.PI * t);
-    const delta = clamp(slope * 270, -95, 270);
-    s += 140 + delta;
-    if(t > 0.55) s = Math.max(s, 180); // 登り最低保証
-  }
-
-  return Math.max(60, s);
-}
-
-/* ---------- physics ---------- */
-function updatePhysics(r, dt){
-  const prevY = r.y;
-  r.wasOnPipe = r.onPipe;
-
-  // gravity
-  r.vy += CONFIG.GRAVITY * dt;
-  r.vy = Math.min(r.vy, CONFIG.MAX_FALL_V);
-  r.y += r.vy * dt;
-
-  // reset contact each frame
-  r.onPipe = false;
-
-  // pipe -> rail -> ground
-  if(updatePipe(r, prevY)){
-    // ok
-  }else if(updateRail(r, prevY)){
-    // ok
-  }else{
-    if(r.y + r.h >= world.groundTop){
-      r.y = world.groundTop - r.h;
-      r.vy = 0;
-      r.onGround = true;
-      r.jumps = 0;
-    }else{
-      r.onGround = false;
-    }
-  }
-
-  // puddle slow
-  const cx = r.x + r.w*0.5;
-  for(const p of world.puddles){
-    if(cx > p.x && cx < p.x + p.w && r.onGround){
-      r.slowTimer = 0.6;
-    }
-  }
-
-  // ring pick (player only) -> 10個で小加速
-  if(r.isPlayer){
-    for(let i=world.rings.length-1;i>=0;i--){
-      const ring = world.rings[i];
-      // 簡易当たり判定（横中心）
-      if(cx > ring.x && cx < ring.x + ring.w){
-        r.rings++;
-        world.rings.splice(i,1);
-
-        if(r.rings >= CONFIG.RING_NEED){
-          r.rings -= CONFIG.RING_NEED;
-          applyBoost(r, CONFIG.RING_BOOST_ADD, CONFIG.RING_BOOST_TIME);
-        }
-        break;
-      }
-    }
-  }
-
-  if(r.boostTimer > 0){
-    r.boostTimer -= dt;
-    if(r.boostTimer <= 0){
-      r.boostTimer = 0;
-      r.boostPower = 0;
-    }
-  }
-  if(r.slowTimer > 0){
-    r.slowTimer -= dt;
-    if(r.slowTimer < 0) r.slowTimer = 0;
-  }
-}
-
-/* ---------- AI ---------- */
-function aiLogic(r, dt){
-  if(r.isPlayer || r.finished) return;
-
-  r.aiCd -= dt;
-  if(r.aiCd > 0) return;
-
-  const named = r.winRate > 0.30; // named 5 = >0.3
-  const cx = r.x + r.w*0.5;
-
-  // 近くのレール/パイプ
-  let nearRail=false, nearPipe=false;
-  for(const rail of world.rails){
-    if(rail.x > cx && rail.x - cx < 180){ nearRail=true; break; }
-  }
-  for(const pipe of world.pipes){
-    if(pipe.x > cx && pipe.x - cx < 210){ nearPipe=true; break; }
-  }
-
-  // namedは積極的に使う
-  const jumpChance = named
-    ? (nearRail||nearPipe ? 0.60 : 0.10)
-    : (nearRail||nearPipe ? 0.18 : 0.05);
-
-  if((r.onGround||r.onRail||r.onPipe) && Math.random() < jumpChance){
-    tryJump(r);
-  }
-
-  // boost（namedは多め）
-  const boostChance = named ? (0.06 + r.winRate*0.08) : 0.03;
-  if(Math.random() < boostChance){
-    applyBoost(r, CONFIG.BOOST_ADD, CONFIG.BOOST_TIME);
-  }
-
-  r.aiCd = rand(named ? 0.18 : 0.28, named ? 0.45 : 0.65);
-}
-
-/* ---------- update run ---------- */
+/* =======================
+   RUN UPDATE
+======================= */
 function updateRun(dt){
-  regenStock(dt);
+  const race = CONFIG.RACES[state.raceIndex];
+  const player = state.runners[state.playerIndex];
 
-  const p = state.runners[state.playerIndex];
+  // カメラ
+  state.cameraX = player.x - 80;
+  if(state.cameraX < 0) state.cameraX = 0;
 
-  if(input.jump){ input.jump=false; tryJump(p); }
-  if(input.boost && state.stock>0){
-    input.boost=false;
-    state.stock--;
-    applyBoost(p, CONFIG.BOOST_ADD, CONFIG.BOOST_TIME);
+  spawnWorld(state.cameraX);
+
+  // プレイヤーのストック回復（5秒）
+  state.stockTimer += dt;
+  if(state.stockTimer >= CONFIG.STOCK_REGEN){
+    state.stockTimer = 0;
+    state.stock = Math.min(CONFIG.STOCK_MAX, state.stock + 1);
   }
-
-  spawnWorld(p.x);
 
   for(const r of state.runners){
-    updatePhysics(r, dt);
-    aiLogic(r, dt);
-    r.x += speedOf(r) * dt;
+    if(r.finished) continue;
 
-    if(!r.finished && r.x >= world.goalX){
+    // --------- AI ----------
+    if(!r.isPlayer){
+      r.aiCd -= dt;
+      r.aiBoostCd -= dt;
+
+      if(r.aiCd <= 0){
+        r.aiCd = rand(0.25,0.55);
+
+        if(Math.random() < 0.015){
+          doJump(r);
+        }
+      }
+
+      // AIブースト（★5秒クールダウン）
+      if(r.aiBoostCd <= 0 && Math.random() < r.winRate * 0.12){
+        r.aiBoostCd = CONFIG.AI_BOOST_COOLDOWN;
+        startBoost(r, CONFIG.BOOST_ADD, CONFIG.BOOST_TIME);
+      }
+    }
+
+    // --------- INPUT ----------
+    if(r.isPlayer){
+      if(input.jump){
+        doJump(r);
+        input.jump = false;
+      }
+      if(input.boost && state.stock > 0){
+        state.stock--;
+        startBoost(r, CONFIG.BOOST_ADD, CONFIG.BOOST_TIME);
+        input.boost = false;
+      }
+    }
+
+    // --------- PHYSICS ----------
+    let speed = CONFIG.BASE_SPEED;
+
+    if(r.boostTimer > 0){
+      r.boostTimer -= dt;
+      speed += r.boostPower;
+    }
+
+    if(r.slowTimer > 0){
+      r.slowTimer -= dt;
+      speed *= 0.75;
+    }
+
+    // ---- PIPE SLOPE ----
+    if(r.onPipe && r.pipeRef){
+      // 正規化された進行度 t (0-1)
+      r.pipeT = clamp((r.x - r.pipeRef.x) / r.pipeRef.w, 0, 1);
+
+      // 半円スロープ：sinカーブで上下
+      const angle = Math.PI * r.pipeT;
+      const lift = Math.sin(angle);
+
+      // ★上がらない問題の修正点
+      r.y = r.pipeRef.y + r.pipeRef.h - lift * r.pipeRef.h - r.h;
+      speed += lift * 160; // 坂加速
+
+      if(r.pipeT >= 1){
+        r.onPipe = false;
+        r.pipeRef = null;
+        r.onGround = true;
+      }
+    }else{
+      // 重力
+      r.vy += CONFIG.GRAVITY * dt;
+      r.vy = Math.min(r.vy, CONFIG.MAX_FALL_V);
+      r.y += r.vy * dt;
+    }
+
+    r.x += speed * dt;
+
+    // --------- GROUND ----------
+    if(!r.onPipe){
+      if(r.y + r.h >= world.groundY){
+        r.y = world.groundY - r.h;
+        r.vy = 0;
+        r.onGround = true;
+        r.jumps = 0;
+      }else{
+        r.onGround = false;
+      }
+    }
+
+    // --------- RAIL ----------
+    if(!r.onPipe){
+      for(const rail of world.rails){
+        if(rectHit(r.x,r.y,r.w,r.h, rail.x,rail.y,rail.w,rail.h)){
+          if(r.vy >= 0 && r.y + r.h - r.vy*dt <= rail.y){
+            r.y = rail.y - r.h;
+            r.vy = 0;
+            r.onGround = true;
+            r.onRail = true;
+            speed += 60;
+          }
+        }
+      }
+    }
+
+    // --------- PIPE ENTER ----------
+    if(!r.onPipe){
+      for(const pipe of world.pipes){
+        if(rectHit(r.x,r.y,r.w,r.h, pipe.x,pipe.y,pipe.w,pipe.h)){
+          if(r.vy >= 0 && r.y + r.h - r.vy*dt <= pipe.y){
+            r.onPipe = true;
+            r.pipeRef = pipe;
+            r.pipeT = 0;
+            r.vy = 0;
+            r.onGround = false;
+          }
+        }
+      }
+    }
+
+    // --------- PUDDLE ----------
+    for(const p of world.puddles){
+      if(rectHit(r.x,r.y,r.w,r.h, p.x,p.y,p.w,p.h)){
+        r.slowTimer = 0.4;
+      }
+    }
+
+    // --------- RING ----------
+    for(const ring of world.rings){
+      if(!ring.taken){
+        const dx = (r.x + r.w/2) - ring.x;
+        const dy = (r.y + r.h/2) - ring.y;
+        if(dx*dx + dy*dy < ring.r*ring.r*4){
+          ring.taken = true;
+          r.rings++;
+          if(r.rings >= CONFIG.RING_NEED){
+            r.rings = 0;
+            startBoost(r, CONFIG.RING_BOOST_ADD, CONFIG.RING_BOOST_TIME);
+          }
+        }
+      }
+    }
+
+    // --------- FINISH ----------
+    if(!r.finished && r.x / CONFIG.PX_PER_M >= race.goal){
       r.finished = true;
       r.finishTime = state.time;
       state.finishedCount++;
     }
   }
 
+  state.time += dt;
   updateRank();
 
-  state.cameraX = p.x - CONFIG.LOGICAL_W * 0.18;
-  state.time += dt;
-
-  const race = CONFIG.RACES[state.raceIndex];
+  // ---- END CHECK ----
   if(state.finishedCount >= race.survive){
     state.phase = "result";
     nextFixed.style.display = "block";
-    if(btnNext) btnNext.style.display = "none";
   }
 }
 
-/* === PART4 START === */
-   // game.js PART 4 / 5  (v5)
-// RENDER / PLAYER LABEL / RESULT CENTER BIG
+/* =======================
+   ACTIONS
+======================= */
+function doJump(r){
+  if(r.onGround){
+    r.vy = -CONFIG.JUMP_V1;
+    r.onGround = false;
+    r.jumps = 1;
+  }else if(r.jumps === 1){
+    r.vy = -CONFIG.JUMP_V2;
+    r.jumps = 2;
+  }
+}
 
-/* ---------- draw base ---------- */
+function startBoost(r,power,time){
+  r.boostPower = power;
+  r.boostTimer = time;
+}
+
+/* === PART4 START === */
+   // game.js PART 4 / 5  (v6)
+// RENDER (COVER -> 黒帯消し) / COUNTDOWN暗転軽減 / PLAYER LABEL / RESULT CENTER
+
+/* =======================
+   DRAW BASE
+======================= */
 function beginDraw(){
   const cw = canvas.width;
   const ch = canvas.height;
+
   const sx = cw / CONFIG.LOGICAL_W;
   const sy = ch / CONFIG.LOGICAL_H;
 
-  // 以前と同じ感覚に戻す：単純にフィット
-  const s = Math.min(sx, sy);
+  // ★黒帯を消す：画面を埋める（cover）
+  const s = Math.max(sx, sy);
   const ox = (cw - CONFIG.LOGICAL_W * s) * 0.5;
   const oy = (ch - CONFIG.LOGICAL_H * s) * 0.5;
 
@@ -769,7 +658,9 @@ function beginDraw(){
   ctx.imageSmoothingEnabled = false;
 }
 
-/* ---------- background ---------- */
+/* =======================
+   BG
+======================= */
 function drawSky(){
   const g = ctx.createLinearGradient(0,0,0,CONFIG.LOGICAL_H);
   g.addColorStop(0,"#2a6ccf");
@@ -780,180 +671,186 @@ function drawSky(){
 }
 
 function drawStage(){
-  const y = world.groundTop;
-
-  ctx.fillStyle = "rgba(0,0,0,0.25)";
-  ctx.fillRect(0,y,CONFIG.LOGICAL_W,world.groundH);
+  // ground shade
+  ctx.fillStyle = "rgba(0,0,0,0.20)";
+  ctx.fillRect(0, world.groundY, CONFIG.LOGICAL_W, world.groundH);
 
   const img = IMAGES.stage;
   if(!img) return;
 
+  // scale stage image to groundH
   const s = world.groundH / img.height;
-  const w = Math.floor(img.width * s);
+  const w = Math.max(1, Math.floor(img.width * s));
   let x = -((state.cameraX % w + w) % w);
+
   for(; x < CONFIG.LOGICAL_W + w; x += w){
-    ctx.drawImage(img, x, y, w, world.groundH);
+    ctx.drawImage(img, x, world.groundY, w, world.groundH);
   }
 }
 
-/* ---------- objects ---------- */
+/* =======================
+   OBJECTS
+======================= */
 function drawObjects(){
-  // puddle
+  // puddles
   ctx.fillStyle="rgba(120,190,255,0.55)";
   for(const p of world.puddles){
-    const sx=p.x-state.cameraX;
-    if(sx<-200||sx>CONFIG.LOGICAL_W+200) continue;
-    ctx.fillRect(sx,p.y,p.w,p.h);
+    const sx = p.x - state.cameraX;
+    if(sx < -120 || sx > CONFIG.LOGICAL_W + 120) continue;
+    ctx.fillRect(sx, p.y, p.w, p.h);
   }
 
   // rings
-  const ring=IMAGES.ring;
-  for(const r of world.rings){
-    const sx=r.x-state.cameraX;
-    if(sx<-200||sx>CONFIG.LOGICAL_W+200) continue;
-    ring && ctx.drawImage(ring,sx,r.y,r.w,r.h);
+  const ringImg = IMAGES.ring;
+  if(ringImg){
+    for(const r of world.rings){
+      if(r.taken) continue;
+      const sx = r.x - state.cameraX;
+      if(sx < -120 || sx > CONFIG.LOGICAL_W + 120) continue;
+      ctx.drawImage(ringImg, sx - 10, r.y - 10, 20, 20);
+    }
   }
 
   // pipes
   for(const p of world.pipes){
-    const sx=p.x-state.cameraX;
-    if(sx<-300||sx>CONFIG.LOGICAL_W+300) continue;
-    ctx.drawImage(p.img,sx,p.y,p.w,p.h);
+    const sx = p.x - state.cameraX;
+    if(sx < -260 || sx > CONFIG.LOGICAL_W + 260) continue;
+    ctx.drawImage(p.img, sx, p.y, p.w, p.h);
   }
 
   // rails
-  const rail=IMAGES.rail;
-  for(const r of world.rails){
-    const sx=r.x-state.cameraX;
-    if(sx<-200||sx>CONFIG.LOGICAL_W+200) continue;
-    rail && ctx.drawImage(rail,sx,r.y,r.w,r.h);
+  const railImg = IMAGES.rail;
+  if(railImg){
+    for(const r of world.rails){
+      const sx = r.x - state.cameraX;
+      if(sx < -200 || sx > CONFIG.LOGICAL_W + 200) continue;
+      ctx.drawImage(railImg, sx, r.y, r.w, r.h);
+    }
   }
 }
 
-/* ---------- runner ---------- */
+/* =======================
+   RUNNERS
+======================= */
+function screenXOf(r){
+  if(r.isPlayer) return Math.floor(CONFIG.LOGICAL_W * 0.18);
+  const p = state.runners[state.playerIndex];
+  return Math.floor(CONFIG.LOGICAL_W * 0.18 + (r.x - p.x));
+}
+
 function drawRunner(r){
-  let sx;
-  if(r.isPlayer){
-    sx = Math.floor(CONFIG.LOGICAL_W * 0.18);
-  }else{
-    const p = state.runners[state.playerIndex];
-    sx = Math.floor(CONFIG.LOGICAL_W * 0.18 + (r.x - p.x));
-  }
+  const sx = screenXOf(r);
   if(sx < -120 || sx > CONFIG.LOGICAL_W + 120) return;
 
   // shadow
   ctx.fillStyle="rgba(0,0,0,0.25)";
   ctx.beginPath();
-  ctx.ellipse(
-    sx + r.w/2,
-    world.groundTop + 6,
-    r.w * 0.35,
-    6,
-    0,0,Math.PI*2
-  );
+  ctx.ellipse(sx + r.w/2, world.groundY + 5, r.w*0.35, 5, 0, 0, Math.PI*2);
   ctx.fill();
 
   // board
   const board = IMAGES.board;
-  board && ctx.drawImage(
-    board,
-    sx - r.w*0.05,
-    r.y + r.h*0.65,
-    r.w*1.1,
-    r.h*0.45
-  );
+  if(board){
+    ctx.drawImage(board, sx - r.w*0.05, r.y + r.h*0.65, r.w*1.1, r.h*0.45);
+  }
 
   // body
-  const body = (r.onGround||r.onRail||r.onPipe) ? IMAGES.pl1 : IMAGES.pl2;
-  body && ctx.drawImage(body, sx, r.y, r.w, r.h);
+  const body = (r.onGround || r.onRail || r.onPipe) ? IMAGES.pl1 : IMAGES.pl2;
+  if(body) ctx.drawImage(body, sx, r.y, r.w, r.h);
 
-  // ★プレイヤー識別ラベル
+  // label
   if(r.isPlayer){
-    ctx.font = "10px system-ui";
-    ctx.textAlign = "center";
-    ctx.fillStyle = "rgba(255,255,255,0.95)";
-    ctx.strokeStyle = "rgba(0,0,0,0.8)";
-    ctx.lineWidth = 3;
+    ctx.font="10px system-ui";
+    ctx.textAlign="center";
+    ctx.strokeStyle="rgba(0,0,0,0.85)";
+    ctx.lineWidth=3;
+    ctx.fillStyle="rgba(255,255,255,0.95)";
     ctx.strokeText("プレイヤー", sx + r.w/2, r.y - 6);
     ctx.fillText("プレイヤー", sx + r.w/2, r.y - 6);
-    ctx.textAlign = "left";
+    ctx.textAlign="left";
   }
 }
 
-/* ---------- result ---------- */
+/* =======================
+   RESULT
+======================= */
 function drawResult(){
   ctx.fillStyle="rgba(0,0,0,0.85)";
   ctx.fillRect(0,0,CONFIG.LOGICAL_W,CONFIG.LOGICAL_H);
 
   ctx.fillStyle="#fff";
   ctx.textAlign="center";
-  ctx.font="bold 26px system-ui";
-  ctx.fillText(
-    `RESULT - ${CONFIG.RACES[state.raceIndex].name}`,
-    CONFIG.LOGICAL_W/2,
-    56
-  );
+  ctx.font="bold 28px system-ui";
+  ctx.fillText(`RESULT - ${CONFIG.RACES[state.raceIndex].name}`, CONFIG.LOGICAL_W/2, 64);
 
   const list=[...state.runners].sort((a,b)=>a.finishTime-b.finishTime);
 
-  ctx.font="16px system-ui";
-  let y=110;
-  for(let i=0;i<list.length;i++){
-    if(i>=12) break;
+  ctx.font="18px system-ui";
+  let y=120;
+  for(let i=0;i<list.length && i<10;i++){
     const r=list[i];
-    ctx.fillStyle=r.isPlayer?"#00ffcc":"#ffffff";
     const t=isFinite(r.finishTime)?`${r.finishTime.toFixed(2)}s`:"--";
-    ctx.fillText(
-      `${i+1}. ${r.name}   ${t}`,
-      CONFIG.LOGICAL_W/2,
-      y
-    );
-    y+=28;
+    ctx.fillStyle=r.isPlayer?"#00ffcc":"#ffffff";
+    ctx.fillText(`${i+1}. ${r.name}   ${t}`, CONFIG.LOGICAL_W/2, y);
+    y += 34;
   }
-
   ctx.textAlign="left";
 }
 
-/* ---------- render ---------- */
+/* =======================
+   RENDER
+======================= */
 function render(){
-  // 残像完全防止
+  // ★残像完全防止（毎フレーム完全クリア）
   ctx.setTransform(1,0,0,1,0,0);
   ctx.globalCompositeOperation="source-over";
   ctx.fillStyle="#000";
   ctx.fillRect(0,0,canvas.width,canvas.height);
 
   beginDraw();
+
   drawSky();
   drawStage();
   drawObjects();
 
+  // runners (named first for readability)
   for(const r of state.runners){
-    if(!r.isPlayer && r.winRate>0.3) drawRunner(r);
+    if(!r.isPlayer && r.winRate > 0.30) drawRunner(r);
   }
   drawRunner(state.runners[state.playerIndex]);
 
-  if(state.phase==="countdown"){
-    ctx.fillStyle="rgba(0,0,0,0.6)";
+  // version small (邪魔にならない位置)
+  ctx.font="10px system-ui";
+  ctx.fillStyle="rgba(255,255,255,0.55)";
+  ctx.fillText(VERSION, 8, CONFIG.LOGICAL_H - 10);
+
+  if(state.phase === "countdown"){
+    // ★暗転を軽くする（黒い影が覆う問題）
+    ctx.fillStyle="rgba(0,0,0,0.14)";
     ctx.fillRect(0,0,CONFIG.LOGICAL_W,CONFIG.LOGICAL_H);
+
     ctx.fillStyle="#fff";
     ctx.font="bold 64px system-ui";
     ctx.textAlign="center";
-    ctx.fillText(
-      Math.ceil(state.countdown),
-      CONFIG.LOGICAL_W/2,
-      CONFIG.LOGICAL_H/2
-    );
+    ctx.fillText(Math.ceil(state.countdown), CONFIG.LOGICAL_W/2, CONFIG.LOGICAL_H/2);
     ctx.textAlign="left";
   }
 
-  if(state.phase==="result"){
+  if(state.phase === "result"){
     drawResult();
   }
 }
 
 /* === PART5 START === */
-   // game.js PART 5 / 5  (v5)
-// LOOP / NEXT RACE / BOOT
+   // game.js PART 5 / 5  (v6)
+// LOOP / COUNTDOWN / NEXT / BOOT
+
+function updateCountdown(dt){
+  state.countdown -= dt;
+  if(state.countdown <= 0){
+    state.phase = "run";
+  }
+}
 
 function update(dt){
   if(state.phase === "countdown"){
@@ -965,10 +862,7 @@ function update(dt){
     updateRun(dt);
     return;
   }
-  // result
-  if(state.phase === "result"){
-    // ここでは描画のみ（入力はNEXTのみ）
-  }
+  // result: input is NEXT only
 }
 
 function loop(t){
@@ -982,18 +876,21 @@ function loop(t){
   requestAnimationFrame(loop);
 }
 
-/* ---------- NEXT (固定ボタン) ---------- */
+/* ---------- NEXT ---------- */
 nextFixed.addEventListener("pointerdown", ()=>{
   nextFixed.style.display = "none";
 
-  if(state.raceIndex < CONFIG.RACES.length - 1){
-    initRace(state.raceIndex + 1);
-  }else{
-    initRace(0);
-  }
+  const nextIdx = (state.raceIndex < CONFIG.RACES.length - 1) ? (state.raceIndex + 1) : 0;
+
+  initRace(nextIdx);
+  resetWorldForRace();
   resetGround();
-  setGoal();
-  updateRank();
+
+  // レース開始直後から湧くように
+  spawnWorld(0);
+
+  state.time = 0;
+  state.countdown = 3;
   state.phase = "countdown";
 });
 
@@ -1001,11 +898,27 @@ nextFixed.addEventListener("pointerdown", ()=>{
 async function boot(){
   try{
     await bootCore();
+
     initRace(0);
+    resetWorldForRace();
     resetGround();
-    setGoal();
-    updateRank();
+    spawnWorld(0);
+
+    // 初期配置
+    for(const r of state.runners){
+      r.x = 0;
+      r.y = world.groundY - r.h;
+      r.vy = 0;
+      r.onGround = true;
+      r.onPipe = false;
+      r.pipeRef = null;
+      r.pipeT = 0;
+    }
+
+    state.time = 0;
+    state.countdown = 3;
     state.phase = "countdown";
+
     state.lastTime = performance.now();
     requestAnimationFrame(loop);
   }catch(e){
@@ -1020,5 +933,4 @@ async function boot(){
 
 boot();
 })();
-   
  
