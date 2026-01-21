@@ -1,15 +1,16 @@
 /* =========================================================
-   MOB STREET - V1 (スマホ基準 / 最小構成)
+   MOB STREET - V2 (スマホ基準 / 最小構成 + ガードレール)
    - 確実に起動する（永久Loading防止）
    - 画面(プレイ)と操作エリア(DOM)分離
    - PL1.png / PL2.png / redsk.png / st.png（任意）
+   - gardw.png（ガードレール：地面上、乗れる）
    - BOOST：5秒に1個、最大5、開始0
-   - バージョン：左上に常時「V1」、起動直後中央にも一瞬表示
+   - バージョン：左上に常時「V2」、起動直後中央にも一瞬表示
 ========================================================= */
 
 "use strict";
 
-const BUILD = "V1";
+const BUILD = "V2";
 
 /* =========================
    DOM
@@ -66,7 +67,8 @@ const ASSET_LIST = [
   "PL1.png",
   "PL2.png",
   "redsk.png",
-  "st.png", // 任意（無くても動く）
+  "st.png",     // 任意（無くても動く）
+  "gardw.png",  // ★追加
 ];
 
 const LOAD = {
@@ -148,7 +150,6 @@ function loadAssets(){
 function drawLoading(){
   ctx.clearRect(0,0,VIEW_W,VIEW_H);
 
-  // 青っぽい雰囲気
   const g = ctx.createLinearGradient(0,0,0,VIEW_H);
   g.addColorStop(0, "#1f5fae");
   g.addColorStop(1, "#0a2142");
@@ -184,10 +185,16 @@ function drawLoading(){
 }
 
 /* =========================
-   Game Config
+   Utils
 ========================= */
 function clamp(v,a,b){ return Math.max(a, Math.min(b,v)); }
+function aabb(ax,ay,aw,ah, bx,by,bw,bh){
+  return ax < bx+bw && ax+aw > bx && ay < by+bh && ay+ah > by;
+}
 
+/* =========================
+   Game Config
+========================= */
 const WORLD = {
   groundRatio: 0.78,
   groundY: 0,
@@ -236,7 +243,6 @@ const boost = {
 };
 
 function updateBoost(dt){
-  // 回復（最初0）
   boost.t += dt;
   if(boost.t >= boost.cooldown){
     const n = Math.floor(boost.t / boost.cooldown);
@@ -244,7 +250,6 @@ function updateBoost(dt){
     boost.stock = clamp(boost.stock + n, 0, boost.max);
   }
 
-  // ブースト効果
   if(boost.activeT > 0){
     boost.activeT -= dt;
     speed = Math.min(SPEED.max, speed + 900*dt);
@@ -255,7 +260,7 @@ function updateBoost(dt){
 function useBoost(){
   if(boost.stock <= 0) return;
   boost.stock--;
-  boost.activeT = 0.45; // 体感：短く鋭い
+  boost.activeT = 0.45;
 }
 
 /* =========================
@@ -276,9 +281,78 @@ function doJump(){
 
 btnJump.addEventListener("pointerdown", (e)=>{ preventDefault(e); doJump(); }, { passive:false });
 btnBoost.addEventListener("pointerdown", (e)=>{ preventDefault(e); useBoost(); }, { passive:false });
-
-// V1では無効（将来用）
 btnJumpBoost.addEventListener("pointerdown", (e)=>{ preventDefault(e); }, { passive:false });
+
+/* =========================
+   Guardrails (V2)
+   - 地面上に出現
+   - 上に乗れる
+   - 連続で繋がらない（出現間隔を確保）
+========================= */
+const GUARDS = [];
+let nextGuardX = 360;
+
+function resetGuards(){
+  GUARDS.length = 0;
+  nextGuardX = 360;
+}
+
+function spawnGuards(){
+  const ahead = dist + VIEW_W * 1.8;
+
+  while(nextGuardX < ahead){
+    // 出現頻度：控えめ（間隔広め）
+    const w = 210 + Math.floor(Math.random()*80); // 210-290
+    const h = 26; // 低め
+    const x = nextGuardX;
+    const y = WORLD.groundY - h;
+
+    GUARDS.push({x,y,w,h});
+
+    // ★繋がらない：必ず隙間を作る
+    nextGuardX += w + 420 + Math.random()*520; // gap 420〜940
+  }
+}
+
+function applyGuardsToPlayer(){
+  // プレイヤーのワールド座標
+  const pWorldX = dist + player.x;
+
+  for(const g of GUARDS){
+    // まず大雑把に重なりチェック
+    if(!aabb(pWorldX, player.y, player.w, player.h, g.x, g.y, g.w, g.h)) continue;
+
+    // 上から着地した場合のみ「乗る」
+    const feet = player.y + player.h;
+    const prevFeet = feet - player.vy * (1/60); // ざっくり
+    const crossing = prevFeet <= g.y && feet >= g.y;
+
+    const inX = (pWorldX + player.w) > g.x && pWorldX < (g.x + g.w);
+
+    if(crossing && inX && player.vy >= 0){
+      player.y = g.y - player.h;
+      player.vy = 0;
+      player.onGround = true;
+
+      // V2は「乗れる」だけ。加速は次で入れる（必要なら）
+    }
+  }
+}
+
+function drawGuards(){
+  const img = ASSETS["gardw.png"];
+  for(const g of GUARDS){
+    const sx = g.x - dist; // スクリーンX
+    if(sx < -400 || sx > VIEW_W + 400) continue;
+
+    if(img && img.width){
+      ctx.drawImage(img, sx, g.y, g.w, g.h);
+    }else{
+      ctx.fillStyle = "rgba(255,255,255,0.25)";
+      ctx.fillRect(sx, g.y, g.w, g.h);
+    }
+  }
+}
 
 /* =========================
    Stage Render
@@ -303,14 +377,13 @@ function drawStage(){
     const scale = tileH / st.height;
     const tileW = Math.floor(st.width * scale);
 
-    const y = WORLD.groundY - 10; // 少し食い込ませて境界を目立たせない
+    const y = WORLD.groundY - 10;
     const offset = -((dist * 0.9) % tileW);
 
     for(let x = offset; x < VIEW_W + tileW; x += tileW){
       ctx.drawImage(st, x, y, tileW, tileH);
     }
   }else{
-    // 境界ライン
     ctx.fillStyle = "rgba(255,255,255,0.15)";
     ctx.fillRect(0, WORLD.groundY-2, VIEW_W, 2);
   }
@@ -341,7 +414,7 @@ function drawPlayer(){
     ctx.fillRect(player.x, player.y, player.w, player.h);
   }
 
-  // プレイヤーラベル（小さく、でも見える）
+  // ラベル
   ctx.fillStyle = "#fff";
   ctx.font = "12px sans-serif";
   ctx.textAlign = "center";
@@ -369,13 +442,11 @@ function updatePlayer(dt){
 }
 
 /* =========================
-   HUD V1 (見失わない表示はDOM側に固定)
-   ここでは追加の“起動確認”として中央toastだけ出す
+   Boot Toast
 ========================= */
 function showBootToast(){
   elBootToast.textContent = BUILD;
   elBootToast.classList.remove("show");
-  // 強制リフロー
   void elBootToast.offsetWidth;
   elBootToast.classList.add("show");
 }
@@ -387,27 +458,25 @@ let gameState = "loading"; // loading | play
 let lastTS = 0;
 
 function initGame(){
-  // 地面位置
   WORLD.groundY = Math.floor(VIEW_H * WORLD.groundRatio);
 
-  // assets
   player.imgRun = ASSETS["PL1.png"];
   player.imgJump = ASSETS["PL2.png"];
   player.board = ASSETS["redsk.png"];
 
-  // 初期位置（地面に埋まらない）
   player.y = WORLD.groundY - player.h;
   player.vy = 0;
   player.onGround = true;
   player.canDouble = true;
 
-  // boost
   boost.stock = 0;
   boost.t = 0;
   boost.activeT = 0;
 
   dist = 0;
   speed = SPEED.base;
+
+  resetGuards();
 
   gameState = "play";
   showBootToast();
@@ -430,15 +499,23 @@ function loop(ts){
   // update
   updateBoost(dt);
 
-  // 進行（右へ走るだけ）
   dist += speed * dt;
 
+  spawnGuards();
+
   updatePlayer(dt);
+
+  // ガードレール上に乗れる判定
+  applyGuardsToPlayer();
 
   // render
   ctx.clearRect(0,0,VIEW_W,VIEW_H);
   drawBackground();
   drawStage();
+
+  // ガードレール（地面より上）
+  drawGuards();
+
   drawPlayer();
 
   requestAnimationFrame(loop);
@@ -449,6 +526,6 @@ function loop(ts){
 ========================= */
 (function boot(){
   resizeCanvas();
-  loadAssets().then(()=>{ /* loop側でinitGame */ });
+  loadAssets().then(()=>{});
   requestAnimationFrame(loop);
 })();
