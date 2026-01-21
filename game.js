@@ -1,1625 +1,1311 @@
 /* =========================================================
    MOB STREET - 1P RUN
-   game.js v7.1
-   PART 1 / 5
-   基盤 / 定数 / 状態 / 座標系 / 基本描画
+   game.js v7.2 (FULL) 5-part split
+   PART 1 / 5 : Boot / Canvas / Input / Robust Asset Loader
 ========================================================= */
 
+"use strict";
+
 /* =========================
-   VERSION
+   VERSION (操作エリアに表示)
 ========================= */
-const GAME_VERSION = "v7.1";
+const GAME_VERSION = "v7.2";
 
 /* =========================
    CANVAS / VIEWPORT
 ========================= */
 const canvas = document.getElementById("game");
-const ctx = canvas.getContext("2d");
+const ctx = canvas.getContext("2d", { alpha: true });
 
-let VIEW_W = 0;
-let VIEW_H = 0;
-let DPR = window.devicePixelRatio || 1;
+let DPR = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+let VIEW_W = 360;
+let VIEW_H = 640;
 
-function resizeCanvas() {
-  VIEW_W = window.innerWidth;
-  VIEW_H = window.innerHeight;
+function clamp(v, a, b){ return Math.max(a, Math.min(b, v)); }
 
-  canvas.width = VIEW_W * DPR;
-  canvas.height = VIEW_H * DPR;
-  canvas.style.width = VIEW_W + "px";
-  canvas.style.height = VIEW_H + "px";
+function resizeCanvas(){
+  // 画面上部HUDと下部操作エリアはHTML/CSS側で分離されている想定。
+  // ここでは canvas が入っている親要素のサイズにフィットさせる。
+  const parent = canvas.parentElement || document.body;
+  const rect = parent.getBoundingClientRect();
+
+  // iOS Safari対策：小数が入ると滲み・黒帯が出やすいので丸め
+  const cssW = Math.floor(rect.width);
+  const cssH = Math.floor(rect.height);
+
+  DPR = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+
+  canvas.style.width = cssW + "px";
+  canvas.style.height = cssH + "px";
+
+  canvas.width = Math.floor(cssW * DPR);
+  canvas.height = Math.floor(cssH * DPR);
 
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  VIEW_W = cssW;
+  VIEW_H = cssH;
 }
-window.addEventListener("resize", resizeCanvas);
-resizeCanvas();
+window.addEventListener("resize", resizeCanvas, { passive:true });
 
 /* =========================
-   WORLD SCALE / GROUND
+   SAFE AREA / UI MARGINS
 ========================= */
-/*
-  重要：
-  ・キャラが埋まる問題の根本対策
-  ・UI領域とプレイ領域を完全分離
-*/
-const UI_SAFE_TOP = 90;
-const UI_SAFE_BOTTOM = 180;
-
-const WORLD = {
-  gravity: 0.9,
-  groundY: () => VIEW_H - UI_SAFE_BOTTOM,
-  scrollX: 0
+const UI = {
+  topMargin: 70,       // HUDが被らない領域（canvas内）
+  bottomMargin: 0,     // canvas下はそもそも操作エリア外想定
+  leftMargin: 0,
+  rightMargin: 0,
+  // 画面左上にTOP8を出すためのパネルサイズ（PART3で描画）
+  top8PanelW: 132,
+  top8PanelH: 190,
 };
 
 /* =========================
-   GAME STATE
+   INPUT LOCK (iOS 選択/拡大防止)
 ========================= */
-const STATE = {
-  BOOT: 0,
-  COUNTDOWN: 1,
-  RUN: 2,
-  RESULT: 3
-};
+function preventDefault(e){
+  if(e && e.cancelable) e.preventDefault();
+}
+function lockTouchOn(el){
+  if(!el) return;
+  // iOSで長押し選択/ダブルタップズームを抑制（可能な範囲）
+  el.style.webkitUserSelect = "none";
+  el.style.userSelect = "none";
+  el.style.webkitTouchCallout = "none";
+  el.style.touchAction = "manipulation";
+  el.addEventListener("contextmenu", (e)=>preventDefault(e));
+  el.addEventListener("gesturestart", (e)=>preventDefault(e));
+  el.addEventListener("gesturechange", (e)=>preventDefault(e));
+  el.addEventListener("gestureend", (e)=>preventDefault(e));
+}
+lockTouchOn(document.body);
+lockTouchOn(canvas);
 
-let gameState = STATE.BOOT;
+/* ボタン類（存在すれば）もロック */
+lockTouchOn(document.getElementById("btnJump"));
+lockTouchOn(document.getElementById("btnBoost"));
+lockTouchOn(document.getElementById("btnJumpBoost"));
 
 /* =========================
-   TIME
+   ASSET LOADER (永久Loading防止)
+   - 失敗しても進む
+   - 失敗したファイル名をLoadingに表示
 ========================= */
-let lastTime = 0;
-let delta = 0;
+const ASSETS = {};
+let assetsReady = false;
 
-/* =========================
-   INPUT
-========================= */
-const INPUT = {
-  jump: false,
-  boost: false,
-  jumpPressed: false,
-  boostPressed: false
+const ASSET_LIST = [
+  // player / board
+  "PL1.png.png",
+  "PL2.png.png",
+  "redsk.png",
+
+  // stage
+  "HA.png",
+  "st.png",
+
+  // gimmicks
+  "gardw.png",
+  "hpr.png",
+  "hpg.png",
+  "dokan.png",
+  "or.png",
+  "dan.png",
+
+  // items
+  "ringtap.png",
+];
+
+const LOAD_STATUS = {
+  total: 0,
+  done: 0,
+  ok: [],
+  ng: [],
+  last: "",
+  startedAt: 0,
+  forced: false
 };
 
-function resetInputFrame() {
-  INPUT.jumpPressed = false;
-  INPUT.boostPressed = false;
+function makePlaceholderImage(w=48, h=48, label="!"){
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  const g = c.getContext("2d");
+  g.fillStyle = "rgba(255,0,0,0.25)";
+  g.fillRect(0,0,w,h);
+  g.strokeStyle = "rgba(255,0,0,0.95)";
+  g.lineWidth = 2;
+  g.strokeRect(1,1,w-2,h-2);
+  g.fillStyle = "#fff";
+  g.font = "bold 16px sans-serif";
+  g.textAlign = "center";
+  g.textBaseline = "middle";
+  g.fillText(label, w/2, h/2);
+  const img = new Image();
+  img.src = c.toDataURL("image/png");
+  return img;
+}
+
+function loadAssets(){
+  LOAD_STATUS.total = ASSET_LIST.length;
+  LOAD_STATUS.done = 0;
+  LOAD_STATUS.ok.length = 0;
+  LOAD_STATUS.ng.length = 0;
+  LOAD_STATUS.last = "";
+  LOAD_STATUS.startedAt = performance.now();
+  LOAD_STATUS.forced = false;
+
+  const bust = `?v=${encodeURIComponent(GAME_VERSION)}&t=${Date.now()}`;
+
+  return new Promise((resolve)=>{
+    let resolved = false;
+
+    // 失敗時でも「永久Loading」を防ぐための強制解除（10秒）
+    const hardTimeout = setTimeout(()=>{
+      if(resolved) return;
+      resolved = true;
+      LOAD_STATUS.forced = true;
+      assetsReady = true;
+      resolve();
+    }, 10000);
+
+    ASSET_LIST.forEach((name)=>{
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+
+      const finalize = (ok)=>{
+        LOAD_STATUS.done++;
+        LOAD_STATUS.last = name;
+        if(ok) LOAD_STATUS.ok.push(name);
+        else LOAD_STATUS.ng.push(name);
+
+        if(LOAD_STATUS.done >= LOAD_STATUS.total && !resolved){
+          clearTimeout(hardTimeout);
+          resolved = true;
+          assetsReady = true;
+          resolve();
+        }
+      };
+
+      img.onload = ()=> finalize(true);
+      img.onerror = ()=>{
+        // 読めない画像はプレースホルダーにして進める
+        ASSETS[name] = makePlaceholderImage(48,48,"!");
+        finalize(false);
+      };
+
+      img.src = name + bust;
+      ASSETS[name] = img;
+    });
+  });
+}
+
+function drawLoading(){
+  ctx.clearRect(0,0,VIEW_W,VIEW_H);
+
+  // 青っぽい背景
+  const g = ctx.createLinearGradient(0,0,0,VIEW_H);
+  g.addColorStop(0, "#1f5fae");
+  g.addColorStop(1, "#0e2b55");
+  ctx.fillStyle = g;
+  ctx.fillRect(0,0,VIEW_W,VIEW_H);
+
+  const pct = LOAD_STATUS.total ? Math.floor((LOAD_STATUS.done/LOAD_STATUS.total)*100) : 0;
+
+  ctx.fillStyle = "rgba(0,0,0,0.20)";
+  ctx.fillRect(0,0,VIEW_W,VIEW_H);
+
+  ctx.fillStyle = "#fff";
+  ctx.textAlign = "center";
+  ctx.font = "700 34px sans-serif";
+  ctx.fillText("Loading...", VIEW_W/2, VIEW_H*0.45);
+
+  ctx.font = "14px sans-serif";
+  ctx.fillText("画像を読み込んでいます", VIEW_W/2, VIEW_H*0.45 + 28);
+
+  ctx.font = "14px sans-serif";
+  ctx.fillText(`${pct}%  (${LOAD_STATUS.done}/${LOAD_STATUS.total})`, VIEW_W/2, VIEW_H*0.45 + 54);
+
+  ctx.font = "12px sans-serif";
+  ctx.fillStyle = "rgba(255,255,255,0.85)";
+  ctx.fillText(LOAD_STATUS.last ? `... ${LOAD_STATUS.last}` : "", VIEW_W/2, VIEW_H*0.45 + 76);
+
+  if(LOAD_STATUS.ng.length){
+    ctx.fillStyle = "rgba(255,220,220,0.95)";
+    ctx.font = "12px sans-serif";
+    ctx.fillText(`FAILED: ${LOAD_STATUS.ng.join(", ")}`, VIEW_W/2, VIEW_H*0.45 + 102);
+  }
+  if(LOAD_STATUS.forced){
+    ctx.fillStyle = "rgba(255,255,255,0.9)";
+    ctx.font = "12px sans-serif";
+    ctx.fillText(`(強制起動: 読み込みが完了しない画像がある可能性)`, VIEW_W/2, VIEW_H*0.45 + 126);
+  }
 }
 
 /* =========================
-   PLAYER BASE PARAM
+   BASIC UTILS
 ========================= */
-const PLAYER_BASE = {
-  width: 48,
-  height: 48,
-  jumpPower: 16,
-  maxSpeed: 260,
-  accel: 0.45
+function aabb(ax,ay,aw,ah, bx,by,bw,bh){
+  return ax < bx+bw && ax+aw > bx && ay < by+bh && ay+ah > by;
+}
+
+/* =========================
+   GAME STATE (PART2以降で本体を定義)
+========================= */
+let gameState = "loading"; // loading | countdown | race | result
+let lastTS = 0;
+
+/* =========================
+   MAIN LOOP (骨組み)
+========================= */
+function loop(ts){
+  const dt = Math.min(0.033, (ts - lastTS) / 1000 || 0);
+  lastTS = ts;
+
+  if(!assetsReady){
+    drawLoading();
+    requestAnimationFrame(loop);
+    return;
+  }
+
+  // assetsReady になったら、PART2でinitGame()を呼ぶ
+  if(gameState === "loading"){
+    // PART2で定義される
+    if(typeof initGame === "function"){
+      initGame();
+      gameState = "countdown";
+    }else{
+      // 念のため（PART2未結合検知）
+      ctx.clearRect(0,0,VIEW_W,VIEW_H);
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0,0,VIEW_W,VIEW_H);
+      ctx.fillStyle = "#fff";
+      ctx.textAlign = "center";
+      ctx.font = "16px sans-serif";
+      ctx.fillText("game.js が途中で切れています（PART2以降が必要）", VIEW_W/2, VIEW_H/2);
+      requestAnimationFrame(loop);
+      return;
+    }
+  }
+
+  // PART2以降でupdate/renderを実装
+  if(typeof updateGame === "function") updateGame(dt);
+  if(typeof renderGame === "function") renderGame();
+
+  requestAnimationFrame(loop);
+}
+
+/* =========================
+   BOOT
+========================= */
+(function boot(){
+  resizeCanvas();
+  loadAssets().then(()=>{
+    // assetsReady になったら loop 側で initGame() へ進む
+  });
+  requestAnimationFrame(loop);
+})();
+/* =========================================================
+   PART 2 / 5
+   Constants / Physics / World / Player Init
+========================================================= */
+
+/* =========================
+   WORLD CONSTANTS
+========================= */
+const GRAVITY = 2600;          // 重力
+const JUMP_VEL = -900;         // 通常ジャンプ
+const DOUBLE_JUMP_VEL = -820;  // 2段目
+const MAX_FALL = 1800;
+
+const BASE_SPEED = 260;
+const MAX_SPEED = 720;
+
+const GROUND_Y_RATIO = 0.78;   // ★ 地面の基準（重要）
+let GROUND_Y = 0;
+
+/* =========================
+   BACKGROUND (HA.png)
+   - 1枚完結
+   - 黒帯を出さない
+========================= */
+const BG = {
+  img: null,
+  widthM: 2000,   // ゲーム内距離（m）
+  scale: 1,
 };
+
+function setupBackground(){
+  BG.img = ASSETS["HA.png"];
+  // 高さ基準で拡大（左右黒帯防止）
+  BG.scale = VIEW_H / BG.img.height;
+}
 
 /* =========================
    PLAYER
 ========================= */
-const player = {
-  x: 120,
+const PLAYER = {
+  x: 80,
   y: 0,
+  w: 36,
+  h: 36,
   vy: 0,
-  speed: 0,
   onGround: false,
-  jumpCount: 0,
-  ring: 0,
-  boostStock: 0,
-  ghost: false
+  canDouble: true,
+  imgRun: null,
+  imgJump: null,
+  board: null,
 };
 
-/* =========================
-   CPU RUNNERS
-========================= */
-const runners = []; // 初期化はPART2
+function setupPlayer(){
+  PLAYER.imgRun = ASSETS["PL1.png.png"];
+  PLAYER.imgJump = ASSETS["PL2.png.png"];
+  PLAYER.board = ASSETS["redsk.png"];
+
+  // ★ 地面に必ず乗る初期位置
+  PLAYER.y = GROUND_Y - PLAYER.h;
+  PLAYER.vy = 0;
+  PLAYER.onGround = true;
+  PLAYER.canDouble = true;
+}
 
 /* =========================
    CAMERA
 ========================= */
 const CAMERA = {
   x: 0,
-  y: 0
 };
 
 /* =========================
-   ASSETS
+   SPEED / DIST
 ========================= */
-const ASSETS = {};
-const ASSET_LIST = [
-  "PL1.png.png",
-  "PL2.png.png",
-  "gardw.png",
-  "hpr.png",
-  "hpg.png",
-  "ringtap.png",
-  "HA.png",
-  "dokan.png",
-  "or.png",
-  "dan.png"
-];
+let speed = BASE_SPEED;
+let dist = 0;
 
-let assetsLoaded = 0;
-let assetsReady = false;
+/* =========================
+   INIT GAME (PART1から呼ばれる)
+========================= */
+function initGame(){
+  // 地面Y確定
+  GROUND_Y = Math.floor(VIEW_H * GROUND_Y_RATIO);
 
-function loadAssets() {
-  ASSET_LIST.forEach(src => {
-    const img = new Image();
-    img.onload = () => {
-      assetsLoaded++;
-      if (assetsLoaded === ASSET_LIST.length) {
-        assetsReady = true;
-      }
-    };
-    img.src = src;
-    ASSETS[src] = img;
-  });
+  setupBackground();
+  setupPlayer();
+
+  speed = BASE_SPEED;
+  dist = 0;
+
+  gameState = "countdown";
 }
-loadAssets();
 
 /* =========================
-   COUNTDOWN
+   PHYSICS UPDATE
 ========================= */
-let countdown = 3;
-let countdownTimer = 0;
+function updatePlayer(dt){
+  // 重力
+  PLAYER.vy += GRAVITY * dt;
+  PLAYER.vy = Math.min(PLAYER.vy, MAX_FALL);
+  PLAYER.y += PLAYER.vy * dt;
+
+  // 地面判定
+  if(PLAYER.y + PLAYER.h >= GROUND_Y){
+    PLAYER.y = GROUND_Y - PLAYER.h;
+    PLAYER.vy = 0;
+    PLAYER.onGround = true;
+    PLAYER.canDouble = true;
+  }else{
+    PLAYER.onGround = false;
+  }
+}
 
 /* =========================
-   UI TEXT
+   INPUT (HTMLボタン想定)
 ========================= */
-function drawVersion() {
-  ctx.save();
-  ctx.globalAlpha = 0.7;
+function doJump(){
+  if(PLAYER.onGround){
+    PLAYER.vy = JUMP_VEL;
+    PLAYER.onGround = false;
+  }else if(PLAYER.canDouble){
+    PLAYER.vy = DOUBLE_JUMP_VEL;
+    PLAYER.canDouble = false;
+  }
+}
+
+/* =========================
+   UPDATE GAME (骨組み)
+========================= */
+function updateGame(dt){
+  if(gameState === "countdown") return;
+
+  // 距離・スピード
+  dist += speed * dt;
+  speed = clamp(speed, BASE_SPEED, MAX_SPEED);
+
+  updatePlayer(dt);
+
+  // カメラ追従
+  CAMERA.x = dist - 80;
+  if(CAMERA.x < 0) CAMERA.x = 0;
+}
+
+/* =========================
+   RENDER (骨組み)
+========================= */
+function renderGame(){
+  ctx.clearRect(0,0,VIEW_W,VIEW_H);
+
+  // --- 背景 ---
+  const bgW = BG.img.width * BG.scale;
+  const bgH = BG.img.height * BG.scale;
+  ctx.drawImage(
+    BG.img,
+    0, 0, BG.img.width, BG.img.height,
+    -CAMERA.x * (bgW / (BG.widthM)), 0,
+    bgW, bgH
+  );
+
+  // --- 地面 ---
+  ctx.fillStyle = "#7a6a4a";
+  ctx.fillRect(0, GROUND_Y, VIEW_W, VIEW_H - GROUND_Y);
+
+  // --- プレイヤー ---
+  const img = PLAYER.onGround ? PLAYER.imgRun : PLAYER.imgJump;
+  ctx.drawImage(img, PLAYER.x, PLAYER.y, PLAYER.w, PLAYER.h);
+  ctx.drawImage(
+    PLAYER.board,
+    PLAYER.x - 4,
+    PLAYER.y + PLAYER.h - 10,
+    PLAYER.w + 8,
+    14
+  );
+
+  // プレイヤーラベル
   ctx.fillStyle = "#fff";
   ctx.font = "12px sans-serif";
-  ctx.textAlign = "right";
-  ctx.fillText(
-    GAME_VERSION,
-    VIEW_W - 12,
-    VIEW_H - 12
-  );
-  ctx.restore();
-}
-
-/* =========================
-   BACKGROUND (HA.png)
-========================= */
-const BG = {
-  x: 0,
-  speed: 0.25
-};
-
-function drawBackground() {
-  const img = ASSETS["HA.png"];
-  if (!img) return;
-
-  const scale = VIEW_H / img.height;
-  const w = img.width * scale;
-
-  let x = -(WORLD.scrollX * BG.speed) % w;
-  ctx.drawImage(img, x, 0, w, VIEW_H);
-  ctx.drawImage(img, x + w, 0, w, VIEW_H);
-}
-
-/* =========================
-   PLAYER PHYSICS
-========================= */
-function updatePlayer() {
-  // gravity
-  player.vy += WORLD.gravity;
-  player.y += player.vy;
-
-  const ground = WORLD.groundY() - PLAYER_BASE.height;
-  if (player.y >= ground) {
-    player.y = ground;
-    player.vy = 0;
-    player.onGround = true;
-    player.jumpCount = 0;
-  } else {
-    player.onGround = false;
-  }
-
-  // speed
-  if (player.speed < PLAYER_BASE.maxSpeed) {
-    player.speed += PLAYER_BASE.accel;
-  }
-
-  WORLD.scrollX += player.speed;
-}
-
-/* =========================
-   PLAYER JUMP
-========================= */
-function playerJump() {
-  if (player.onGround || player.jumpCount < 2) {
-    player.vy = -PLAYER_BASE.jumpPower;
-    player.jumpCount++;
-    player.onGround = false;
-  }
-}
-
-/* =========================
-   DRAW PLAYER
-========================= */
-function drawPlayer() {
-  const img = ASSETS["PL1.png.png"];
-  if (!img) return;
-
-  ctx.drawImage(
-    img,
-    player.x,
-    player.y,
-    PLAYER_BASE.width,
-    PLAYER_BASE.height
-  );
-
-  // label
-  ctx.fillStyle = "#fff";
-  ctx.font = "10px sans-serif";
   ctx.textAlign = "center";
-  ctx.fillText("プレイヤー", player.x + PLAYER_BASE.width / 2, player.y - 6);
+  ctx.fillText("プレイヤー", PLAYER.x + PLAYER.w/2, PLAYER.y - 6);
 }
-
-/* =========================
-   MAIN LOOP
-========================= */
-function loop(t) {
-  delta = t - lastTime;
-  lastTime = t;
-
-  ctx.clearRect(0, 0, VIEW_W, VIEW_H);
-
-  if (!assetsReady) {
-    ctx.fillStyle = "#fff";
-    ctx.fillText("Loading...", VIEW_W / 2, VIEW_H / 2);
-    requestAnimationFrame(loop);
-    return;
-  }
-
-  drawBackground();
-
-  switch (gameState) {
-    case STATE.BOOT:
-      gameState = STATE.COUNTDOWN;
-      break;
-
-    case STATE.COUNTDOWN:
-      countdownTimer += delta;
-      if (countdownTimer > 1000) {
-        countdown--;
-        countdownTimer = 0;
-        if (countdown <= 0) gameState = STATE.RUN;
-      }
-      ctx.fillStyle = "#fff";
-      ctx.font = "64px sans-serif";
-      ctx.textAlign = "center";
-      ctx.fillText(countdown, VIEW_W / 2, VIEW_H / 2);
-      break;
-
-    case STATE.RUN:
-      updatePlayer();
-      drawPlayer();
-      break;
-
-    case STATE.RESULT:
-      break;
-  }
-
-  drawVersion();
-  resetInputFrame();
-  requestAnimationFrame(loop);
-}
-
-requestAnimationFrame(loop);
-/* =========================================================
-   PART 2 / 5
-   CPU生成 / 順位管理 / AI基礎（ジャンプ判断の土台）
-========================================================= */
-
-/* =========================
-   CPU DEFINITIONS
-========================= */
-const CPU_PRESETS = [
-  { name:"フレンチ", win:0.60 },
-  { name:"レッド", win:0.70 },
-  { name:"レッドブルー", win:0.90 },
-  { name:"ブラック", win:0.85 },
-  { name:"ホワイト", win:0.75 }
-];
-
-const CPU_LETTERS = "ABCDEFGHIJKLMNOPQRST".split(""); // 20人
-
-/* =========================
-   CREATE CPU
-========================= */
-function createCPU(name, winRate){
-  return {
-    name,
-    winRate,
-
-    x: 0,
-    y: 0,
-    vy: 0,
-
-    speed: 0,
-    onGround: false,
-    jumpCount: 0,
-
-    thinkTimer: Math.random() * 30,
-    wantJump: false,
-
-    finished: false,
-    rank: 0
-  };
-}
-
-/* =========================
-   INIT RUNNERS
-========================= */
-function initRunners(){
-  runners.length = 0;
-
-  // 名前付きCPU
-  CPU_PRESETS.forEach(c=>{
-    runners.push(createCPU(c.name, c.win));
-  });
-
-  // その他CPU
-  CPU_LETTERS.forEach(l=>{
-    runners.push(createCPU(l, 0.30));
-  });
-
-  // 初期位置を少しずらす
-  runners.forEach((r,i)=>{
-    r.x = -i * 18;
-    r.y = WORLD.groundY() - PLAYER_BASE.height;
-  });
-}
-initRunners();
-
-/* =========================
-   CPU AI (BASE)
-   ※ギミック認識はPART3以降
-========================= */
-function updateCPU(cpu){
-  // gravity
-  cpu.vy += WORLD.gravity;
-  cpu.y += cpu.vy;
-
-  const ground = WORLD.groundY() - PLAYER_BASE.height;
-  if(cpu.y >= ground){
-    cpu.y = ground;
-    cpu.vy = 0;
-    cpu.onGround = true;
-    cpu.jumpCount = 0;
-  }else{
-    cpu.onGround = false;
-  }
-
-  // speed
-  if(cpu.speed < PLAYER_BASE.maxSpeed * cpu.winRate){
-    cpu.speed += PLAYER_BASE.accel * cpu.winRate;
-  }
-
-  // AI thinking
-  cpu.thinkTimer -= 1;
-  if(cpu.thinkTimer <= 0){
-    cpu.thinkTimer = 20 + Math.random() * 40;
-
-    // 勝率が高いほどジャンプ判断が多い
-    cpu.wantJump = Math.random() < cpu.winRate;
-  }
-
-  // jump
-  if(cpu.wantJump && cpu.onGround){
-    cpu.vy = -PLAYER_BASE.jumpPower;
-    cpu.jumpCount++;
-    cpu.wantJump = false;
-  }
-
-  cpu.x += cpu.speed;
-}
-
-/* =========================
-   UPDATE ALL RUNNERS
-========================= */
-function updateRunners(){
-  runners.forEach(cpu=>{
-    updateCPU(cpu);
-  });
-}
-
-/* =========================
-   DRAW CPUs
-========================= */
-function drawCPUs(){
-  const img = ASSETS["PL1.png.png"];
-  if(!img) return;
-
-  runners.forEach(cpu=>{
-    const sx = cpu.x - WORLD.scrollX + player.x;
-
-    if(sx < -60 || sx > VIEW_W + 60) return;
-
-    ctx.drawImage(
-      img,
-      sx,
-      cpu.y,
-      PLAYER_BASE.width,
-      PLAYER_BASE.height
-    );
-
-    ctx.fillStyle = "#ddd";
-    ctx.font = "9px sans-serif";
-    ctx.textAlign = "center";
-    ctx.fillText(cpu.name, sx + PLAYER_BASE.width/2, cpu.y - 4);
-  });
-}
-
-/* =========================
-   RANKING
-========================= */
-function updateRanking(){
-  const all = [player, ...runners];
-  all.sort((a,b)=>b.x - a.x);
-  all.forEach((r,i)=>r.rank = i + 1);
-}
-
-/* =========================
-   DRAW TOP8
-========================= */
-function drawTop8(){
-  const all = [player, ...runners].slice().sort((a,b)=>a.rank - b.rank);
-  const top = all.slice(0,8);
-
-  ctx.save();
-  ctx.globalAlpha = 0.75;
-  ctx.fillStyle = "#000";
-  ctx.fillRect(10, 10, 120, 140);
-
-  ctx.fillStyle = "#fff";
-  ctx.font = "11px sans-serif";
-  ctx.fillText("TOP 8", 20, 26);
-
-  top.forEach((r,i)=>{
-    const name = r === player ? "YOU" : r.name;
-    ctx.fillText(`${i+1}. ${name}`, 20, 44 + i*14);
-  });
-
-  ctx.restore();
-}
-
-/* =========================
-   HOOK INTO MAIN LOOP
-========================= */
-// RUNフェーズ拡張
-const _oldUpdatePlayer = updatePlayer;
-updatePlayer = function(){
-  _oldUpdatePlayer();
-  updateRunners();
-  updateRanking();
-};
-
-// 描画拡張
-const _oldDrawPlayer = drawPlayer;
-drawPlayer = function(){
-  _oldDrawPlayer();
-  drawCPUs();
-  drawTop8();
-};
 /* =========================================================
    PART 3 / 5
-   GIMMICKS + AI LOOKAHEAD + HA.png SAFE DRAW (CROP)
+   Gimmicks Spawn / Collision / Halfpipe Slope
 ========================================================= */
 
 /* =========================
-   INPUT (robust)
-   既存HTMLに依存しすぎない形で追加
+   WORLD SCALE
 ========================= */
-(function bindInputs(){
-  // 既存ボタンがある場合のみ拾う（無ければキー入力は維持）
-  const jumpBtn = document.getElementById("btnJump") || document.getElementById("jump") || null;
-  const boostBtn = document.getElementById("btnBoost") || document.getElementById("boost") || null;
-
-  const onJump = (e)=>{ try{ e.preventDefault(); }catch(_){} INPUT.jumpPressed = true; INPUT.jump = true; };
-  const onBoost = (e)=>{ try{ e.preventDefault(); }catch(_){} INPUT.boostPressed = true; INPUT.boost = true; };
-
-  if(jumpBtn){
-    jumpBtn.addEventListener("pointerdown", onJump, {passive:false});
-    jumpBtn.addEventListener("touchstart", onJump, {passive:false});
-  }
-  if(boostBtn){
-    boostBtn.addEventListener("pointerdown", onBoost, {passive:false});
-    boostBtn.addEventListener("touchstart", onBoost, {passive:false});
-  }
-
-  window.addEventListener("keydown", (e)=>{
-    if(e.code === "Space"){ INPUT.jumpPressed = true; INPUT.jump = true; }
-    if(e.key === "b"){ INPUT.boostPressed = true; INPUT.boost = true; }
-  });
-})();
+const PX_PER_M = 10; // 1m=10px（距離の見やすさ重視）
 
 /* =========================
-   HA.png SAFE DRAW (CROP)
-   ※帯状崩れ対策：drawImageの切り出しで表示
+   GIMMICK LISTS
 ========================= */
-const TRACK_METERS = 2000;
-const TRACK_PIXELS = TRACK_METERS * 10; // 1m=10px（現行基準）
-
-drawBackground = function(){
-  const img = ASSETS["HA.png"];
-  if(!img || !img.width || !img.height) return;
-
-  // カメラ：WORLD.scrollX を 0..TRACK_PIXELS にクランプ
-  const cam = Math.max(0, Math.min(WORLD.scrollX, TRACK_PIXELS - 1));
-
-  // cam(0..TRACK_PIXELS) を srcX(0..img.width) にマップ
-  const viewRatio = VIEW_W / TRACK_PIXELS;            // 表示幅が全体の何割か
-  const srcW = Math.max(1, Math.floor(img.width * viewRatio));
-  const srcX = Math.max(0, Math.min(img.width - srcW, Math.floor(img.width * (cam / TRACK_PIXELS))));
-
-  // 画像から横を切り出して画面にフィット
-  ctx.drawImage(
-    img,
-    srcX, 0, srcW, img.height,
-    0, 0, VIEW_W, VIEW_H
-  );
+const gimm = {
+  guard: [],   // {x,y,w,h}
+  half: [],    // {x,y,w,h,type} type:"blue"|"red"
+  dokan: [],   // {x,y,w,h,air}
+  truck: [],   // {x,y,w,h}
+  dan: [],     // {x,y,w,h}
 };
+
+const OCC = []; // occupied ranges {x0,x1,type}
 
 /* =========================
-   GIMMICKS DATA
+   OCCUPY
 ========================= */
-const GIMMICKS = {
-  halfpipes: [],  // {x,w,variant}
-  dokans: [],     // {x,y,w,h,air}
-  trucks: [],     // {x,y,w,h}
-  dans: [],       // {x,y,w,h}
-};
-
-const OCCUPY = []; // {x0,x1,type} 被り防止
-
-function isFreeRange(x0, x1){
-  for(const o of OCCUPY){
+function occFree(x0, x1){
+  for(const o of OCC){
     if(!(x1 < o.x0 || x0 > o.x1)) return false;
   }
   return true;
 }
-function reserveRange(x0,x1,type){
-  OCCUPY.push({x0,x1,type});
+function occAdd(x0, x1, type){
+  OCC.push({x0,x1,type});
 }
 
 /* =========================
-   SPAWN SETTINGS (少なめ)
+   SPAWN CONTROL (少なめ)
 ========================= */
-let nextHalfX = 700;
-let nextDokanX = 850;
-let nextTruckX = 950;
-let nextDanX = 1200;
+let nextGuard = 420;
+let nextHalf  = 760;
+let nextDokan = 980;
+let nextTruck = 1200;
+let nextDan   = 1500;
 
+function resetGimmicks(){
+  gimm.guard.length = 0;
+  gimm.half.length = 0;
+  gimm.dokan.length = 0;
+  gimm.truck.length = 0;
+  gimm.dan.length = 0;
+  OCC.length = 0;
+
+  nextGuard = 420;
+  nextHalf  = 760;
+  nextDokan = 980;
+  nextTruck = 1200;
+  nextDan   = 1500;
+}
+
+/* =========================
+   SPAWN
+========================= */
 function spawnGimmicks(){
-  const cam = WORLD.scrollX;
-  const ahead = cam + VIEW_W * 1.8;
+  const cam = CAMERA.x;
+  const ahead = cam + VIEW_W * 2.0;
 
-  // ハーフパイプ（横幅を広く）
-  while(nextHalfX < ahead && nextHalfX < TRACK_PIXELS - 200){
-    const hpr = ASSETS["hpr.png"];
-    const hpg = ASSETS["hpg.png"];
-    const img = (Math.random() < 0.5 ? hpr : hpg);
+  // ガード（低め・少なめ）
+  while(nextGuard < ahead){
+    const w = 190;
+    const h = 30; // 低く
+    const x = nextGuard;
+    const y = GROUND_Y - h;
 
-    // 横幅：以前より明確に広く
-    const w = 360 + Math.floor(Math.random() * 220); // 360〜580px（狭さ解消）
-    const x = nextHalfX;
-
-    // 被りチェック（ガード/トラック/土管/danと同列被り禁止）
-    if(isFreeRange(x-40, x+w+40)){
-      GIMMICKS.halfpipes.push({x, w, imgKey: (img===hpr?"hpr.png":"hpg.png")});
-      reserveRange(x-40, x+w+40, "halfpipe");
+    if(occFree(x-40, x+w+40)){
+      gimm.guard.push({x,y,w,h});
+      occAdd(x-40, x+w+40, "guard");
     }
-    nextHalfX += 950 + Math.random()*650;
+    nextGuard += 1200 + Math.random()*900;
+  }
+
+  // ハーフパイプ（横幅広め）
+  while(nextHalf < ahead){
+    const w = 520 + Math.random()*260;  // 520〜780（狭さ解消）
+    const h = 120 + Math.random()*40;   // 少し高め
+    const x = nextHalf;
+    const y = GROUND_Y - h;
+
+    if(occFree(x-60, x+w+60)){
+      const type = (Math.random() < 0.5) ? "blue" : "red";
+      gimm.half.push({x,y,w,h,type});
+      occAdd(x-60, x+w+60, "half");
+    }
+    nextHalf += 1400 + Math.random()*900;
   }
 
   // 土管（地上/空中）
-  while(nextDokanX < ahead && nextDokanX < TRACK_PIXELS - 200){
-    const img = ASSETS["dokan.png"];
-    if(!img || !img.width) { nextDokanX += 900; continue; }
-
+  while(nextDokan < ahead){
     const w = 92;
     const h = 92;
     const air = Math.random() < 0.35;
-    const x = nextDokanX;
-    const y = air ? (WORLD.groundY() - 220 - Math.random()*140) : (WORLD.groundY() - h);
+    const x = nextDokan;
+    const y = air ? (GROUND_Y - 220 - Math.random()*160) : (GROUND_Y - h);
 
-    if(isFreeRange(x-30, x+w+30)){
-      GIMMICKS.dokans.push({x,y,w,h,air});
-      reserveRange(x-30, x+w+30, "dokan");
+    if(occFree(x-60, x+w+60)){
+      gimm.dokan.push({x,y,w,h,air});
+      occAdd(x-60, x+w+60, "dokan");
     }
-    nextDokanX += 900 + Math.random()*650;
+    nextDokan += 1100 + Math.random()*800;
   }
 
-  // トラック（正面衝突で弾かれる）
-  while(nextTruckX < ahead && nextTruckX < TRACK_PIXELS - 200){
-    const img = ASSETS["or.png"];
-    if(!img || !img.width) { nextTruckX += 1100; continue; }
-
-    const w = 150;
+  // トラック（正面衝突）
+  while(nextTruck < ahead){
+    const w = 160;
     const h = 70;
-    const x = nextTruckX;
-    const y = WORLD.groundY() - h;
+    const x = nextTruck;
+    const y = GROUND_Y - h;
 
-    if(isFreeRange(x-40, x+w+40)){
-      GIMMICKS.trucks.push({x,y,w,h});
-      reserveRange(x-40, x+w+40, "truck");
+    if(occFree(x-60, x+w+60)){
+      gimm.truck.push({x,y,w,h});
+      occAdd(x-60, x+w+60, "truck");
     }
-    nextTruckX += 1100 + Math.random()*700;
+    nextTruck += 1300 + Math.random()*900;
   }
 
-  // dan（必ず乗れる加速台：幅を大きめに）
-  while(nextDanX < ahead && nextDanX < TRACK_PIXELS - 260){
-    const img = ASSETS["dan.png"];
-    if(!img || !img.width) { nextDanX += 1400; continue; }
+  // dan（段：乗ると加速、両端スロープ＝必ず乗れる）
+  while(nextDan < ahead){
+    const w = 240;
+    const h = 56;
+    const x = nextDan;
+    const y = GROUND_Y - h;
 
-    const w = 210;
-    const h = 64;
-    const x = nextDanX;
-    const y = WORLD.groundY() - h;
-
-    if(isFreeRange(x-40, x+w+40)){
-      GIMMICKS.dans.push({x,y,w,h});
-      reserveRange(x-40, x+w+40, "dan");
+    if(occFree(x-60, x+w+60)){
+      gimm.dan.push({x,y,w,h});
+      occAdd(x-60, x+w+60, "dan");
     }
-    nextDanX += 1400 + Math.random()*800;
+    nextDan += 1500 + Math.random()*900;
   }
 }
 
 /* =========================
    COLLISION HELPERS
 ========================= */
-function aabb(ax,ay,aw,ah,bx,by,bw,bh){
-  return ax < bx+bw && ax+aw > bx && ay < by+bh && ay+ah > by;
+function entityBox(ent){
+  return {x: ent.x + CAMERA.x, y: ent.y, w: ent.w, h: ent.h}; // worldX = screenX+camera
 }
-function landOnTop(ent, obj){
-  // “上に乗る”判定（簡易）
-  const prevY = ent.y - ent.vy;
-  const feetNow = ent.y + PLAYER_BASE.height;
-  const feetPrev = prevY + PLAYER_BASE.height;
 
-  const inX = (ent.x + PLAYER_BASE.width) > obj.x && ent.x < (obj.x + obj.w);
+function landOn(ent, obj){
+  // ent: {x,y,w,h,vy} screen space (x is screen)
+  // obj: {x,y,w,h} world space
+  const eWorldX = ent.x + CAMERA.x;
+  const prevY = ent.y - ent.vy * (1/60);
+  const feetPrev = prevY + ent.h;
+  const feetNow  = ent.y + ent.h;
+
+  const inX = (eWorldX + ent.w) > obj.x && eWorldX < (obj.x + obj.w);
   const cross = feetPrev <= obj.y && feetNow >= obj.y;
   return inX && cross && ent.vy >= 0;
 }
 
-/* =========================
-   PLAYER / CPU : APPLY GIMMICKS
-========================= */
-function applyGimmicksToEntity(ent, isPlayer){
-  const ground = WORLD.groundY() - PLAYER_BASE.height;
-
-  // トラック：上に乗れる／正面衝突はノックバック
-  for(const t of GIMMICKS.trucks){
-    if(aabb(ent.x, ent.y, PLAYER_BASE.width, PLAYER_BASE.height, t.x, t.y, t.w, t.h)){
-      if(landOnTop(ent, t)){
-        ent.y = t.y - PLAYER_BASE.height;
-        ent.vy = 0;
-        ent.onGround = true;
-      }else{
-        // 正面衝突ノックバック
-        ent.x -= 34;
-        if(isPlayer) ent.speed = Math.max(ent.speed - 12, 0);
-      }
-    }
-  }
-
-  // dan：上にいる間 加速（必ず乗れる設計）
-  for(const d of GIMMICKS.dans){
-    if(aabb(ent.x, ent.y, PLAYER_BASE.width, PLAYER_BASE.height, d.x, d.y, d.w, d.h)){
-      if(landOnTop(ent, d)){
-        ent.y = d.y - PLAYER_BASE.height;
-        ent.vy = 0;
-        ent.onGround = true;
-        ent.speed = Math.min(ent.speed + 3.2, PLAYER_BASE.maxSpeed + 60);
-      }
-    }
-  }
-
-  // 土管：上に乗れる／成功侵入で加速＋半透明フラグ
-  for(const p of GIMMICKS.dokans){
-    const hit = aabb(ent.x, ent.y, PLAYER_BASE.width, PLAYER_BASE.height, p.x, p.y, p.w, p.h);
-    if(!hit) continue;
-
-    // 上に乗る
-    if(landOnTop(ent, p)){
-      ent.y = p.y - PLAYER_BASE.height;
-      ent.vy = 0;
-      ent.onGround = true;
-      continue;
-    }
-
-    // “中に入る”成功条件：中心寄りで接触
-    const center = ent.x + PLAYER_BASE.width/2;
-    const ok = Math.abs(center - (p.x + p.w/2)) <= (p.w * 0.20);
-
-    if(ok){
-      // 侵入：一時的に加速（PART4で半透明描画）
-      ent._inDokan = true;
-      ent._dokanTimer = 0.70;
-      ent.speed = Math.min(ent.speed + 10, PLAYER_BASE.maxSpeed + 120);
-    }else{
-      // 失敗：少し弾かれる
-      ent.x -= 22;
-      if(isPlayer) ent.speed = Math.max(ent.speed - 10, 0);
-    }
-  }
-
-  // ハーフパイプ：中に入ったら坂で加速（簡易sin曲線）
-  for(const hp of GIMMICKS.halfpipes){
-    const x0 = hp.x;
-    const x1 = hp.x + hp.w;
-    const mid = (x0 + x1) * 0.5;
-    const cx = ent.x + PLAYER_BASE.width/2;
-
-    if(cx < x0 || cx > x1) continue;
-
-    // パイプのYを計算（底を ground、両端も ground）
-    const t = (cx - x0) / (hp.w);
-    const depth = Math.sin(t * Math.PI); // 0..1..0
-    const lift = depth * 70;             // 深さ（加速のためのカーブ量）
-    const targetY = (ground) - lift;
-
-    // 落下しているときにパイプ面に吸着
-    if(ent.y >= targetY - 6 && ent.y <= targetY + 22){
-      ent.y = targetY;
-      ent.vy = 0;
-      ent.onGround = true;
-      // 坂加速：中央ほど加速
-      ent.speed = Math.min(ent.speed + 2.2 + depth*2.4, PLAYER_BASE.maxSpeed + 120);
-    }
-  }
+function knockBack(){
+  // 少し後ろに弾く
+  dist = Math.max(0, dist - 18);
+  speed = Math.max(BASE_SPEED, speed - 40);
 }
 
 /* =========================
-   AI LOOKAHEAD (avoid / use gimmicks)
-   トラックで詰まない / dan・ハーフパイプ・土管を使う
+   HALFPIPE SURFACE
+   - 端は地面（乗れる）
+   - 中は曲線
 ========================= */
-function aiDecide(cpu){
-  const lookMin = 140;
-  const lookMax = 240;
-  const look = lookMin + cpu.winRate * (lookMax - lookMin);
-
-  const frontX = cpu.x + look;
-
-  // 危険：トラック正面（地上）を検出 → ジャンプ
-  for(const t of GIMMICKS.trucks){
-    if(t.x > cpu.x && t.x < frontX){
-      const sameLane = Math.abs((WORLD.groundY() - PLAYER_BASE.height) - cpu.y) < 8;
-      if(sameLane){
-        return { jump:true };
-      }
-    }
-  }
-
-  // 利用：dan が近い → 乗る（早めジャンプは不要、地上維持）
-  for(const d of GIMMICKS.dans){
-    if(d.x > cpu.x && d.x < frontX){
-      return { jump:false };
-    }
-  }
-
-  // 利用：ハーフパイプが近い → 中央に乗るため軽くジャンプ（勝率高いほど）
-  for(const hp of GIMMICKS.halfpipes){
-    if(hp.x > cpu.x && hp.x < frontX){
-      if(Math.random() < (0.15 + cpu.winRate*0.35)){
-        return { jump:true };
-      }
-    }
-  }
-
-  // 土管：成功条件が厳しいので、勝率が高いCPUは狙う／低いCPUは避ける
-  for(const p of GIMMICKS.dokans){
-    if(p.x > cpu.x && p.x < frontX){
-      if(cpu.winRate >= 0.7){
-        // 狙う：中央に近い軌道を作りたい → ジャンプで調整
-        if(Math.random() < 0.35) return { jump:true };
-      }else{
-        // 避ける：当たって弾かれるよりジャンプ
-        return { jump:true };
-      }
-    }
-  }
-
-  // 既存のランダムジャンプ（軽く）
-  if(cpu.onGround && Math.random() < (0.01 + cpu.winRate*0.03)){
-    return { jump:true };
-  }
-
-  return { jump:false };
+function halfpipeSurfaceY(hp, worldCenterX){
+  const x0 = hp.x;
+  const x1 = hp.x + hp.w;
+  const t = clamp((worldCenterX - x0) / (hp.w), 0, 1); // 0..1
+  // 0..1..0 の形
+  const depth = Math.sin(t * Math.PI);
+  // 中央が一番深い（上に吸着させるため y は上がるほど小さいので “持ち上げ”）
+  const lift = depth * (hp.h * 0.70);
+  return (GROUND_Y - PLAYER.h) - lift;
 }
 
 /* =========================
-   HOOK CPU UPDATE: replace jump rule
+   APPLY GIMMICKS to PLAYER
 ========================= */
-const _oldUpdateCPU = updateCPU;
-updateCPU = function(cpu){
-  // 先に通常更新（重力/速度）※中のjump処理は下で上書き
-  // 一旦wantJumpを無効化して、aiDecideに一本化
-  cpu.wantJump = false;
+function applyGimmicksPlayer(dt){
+  const p = PLAYER;
+  const pWorldX = p.x + CAMERA.x;
 
-  // gravity/speed等は元関数を使うが、jumpだけはここで
-  // 元関数のjumpが走る前に wantJump=false にしている
-  _oldUpdateCPU(cpu);
-
-  // 先読みAI（ギミック回避）
-  const act = aiDecide(cpu);
-  if(act.jump && cpu.onGround){
-    cpu.vy = -PLAYER_BASE.jumpPower;
-    cpu.jumpCount++;
-    cpu.onGround = false;
-  }
-
-  // ギミック適用（トラック衝突回避の仕上げ）
-  applyGimmicksToEntity(cpu, false);
-};
-
-/* =========================
-   HOOK PLAYER UPDATE: apply gimmicks + input
-========================= */
-const _oldUpdatePlayer2 = updatePlayer;
-updatePlayer = function(){
-  // ギミック生成
-  spawnGimmicks();
-
-  // 入力→ジャンプ
-  if(INPUT.jumpPressed){
-    playerJump();
-  }
-
-  // 先に通常更新
-  _oldUpdatePlayer2();
-
-  // ギミック適用
-  applyGimmicksToEntity(player, true);
-
-  // 土管中：タイマー処理（半透明は描画で）
-  if(player._inDokan){
-    player._dokanTimer -= 1/60;
-    if(player._dokanTimer <= 0){
-      player._inDokan = false;
-    }else{
-      // 中移動中は加速継続
-      player.speed = Math.min(player.speed + 0.9, PLAYER_BASE.maxSpeed + 140);
+  // ガード：上に乗ると微加速
+  for(const g of gimm.guard){
+    if(aabb(pWorldX, p.y, p.w, p.h, g.x, g.y, g.w, g.h)){
+      if(landOn(p, g)){
+        p.y = g.y - p.h;
+        p.vy = 0;
+        p.onGround = true;
+        speed = Math.min(MAX_SPEED, speed + 18);
+      }
     }
   }
-};
 
-/* =========================
-   HOOK PLAYER DRAW: dokan半透明（描画側）
-========================= */
-const _oldDrawPlayer2 = drawPlayer;
-drawPlayer = function(){
-  // CPU/Top8はPART2のdrawPlayerフック内で呼ばれる構造なので
-  // ここは “プレイヤー本体描画” のみ差し替え
-  const img = ASSETS["PL1.png.png"];
-  if(!img) return;
+  // dan：必ず乗れる（スロープ扱い）
+  for(const d of gimm.dan){
+    // スロープ領域を少し広げる
+    const pad = 24;
+    if(aabb(pWorldX, p.y, p.w, p.h, d.x - pad, d.y, d.w + pad*2, d.h)){
+      // 乗せる
+      if(p.y + p.h >= d.y && p.vy >= 0){
+        p.y = d.y - p.h;
+        p.vy = 0;
+        p.onGround = true;
+        speed = Math.min(MAX_SPEED, speed + 26);
+      }
+    }
+  }
 
-  ctx.save();
-  if(player._inDokan) ctx.globalAlpha = 0.45;
-  ctx.drawImage(img, player.x, player.y, PLAYER_BASE.width, PLAYER_BASE.height);
-  ctx.restore();
+  // トラック：上に乗れる／正面衝突ノックバック
+  for(const t of gimm.truck){
+    if(aabb(pWorldX, p.y, p.w, p.h, t.x, t.y, t.w, t.h)){
+      if(landOn(p, t)){
+        p.y = t.y - p.h;
+        p.vy = 0;
+        p.onGround = true;
+      }else{
+        knockBack();
+      }
+    }
+  }
 
-  // label
-  ctx.fillStyle = "#fff";
-  ctx.font = "10px sans-serif";
-  ctx.textAlign = "center";
-  ctx.fillText("プレイヤー", player.x + PLAYER_BASE.width / 2, player.y - 6);
-};
+  // 土管：上に乗れる／中に入れば加速（半透明はPART5で描画へ）
+  for(const dk of gimm.dokan){
+    if(aabb(pWorldX, p.y, p.w, p.h, dk.x, dk.y, dk.w, dk.h)){
+      if(landOn(p, dk)){
+        p.y = dk.y - p.h;
+        p.vy = 0;
+        p.onGround = true;
+      }else{
+        const center = pWorldX + p.w/2;
+        const ok = Math.abs(center - (dk.x + dk.w/2)) <= (dk.w * 0.22);
+        if(ok){
+          p._inDokan = true;
+          p._dokanT = 0.70;
+          speed = Math.min(MAX_SPEED, speed + 90);
+        }else{
+          knockBack();
+        }
+      }
+    }
+  }
+
+  // ハーフパイプ：吸着して落ちない＋中央ほど加速
+  for(const hp of gimm.half){
+    const cx = pWorldX + p.w/2;
+    if(cx < hp.x || cx > hp.x + hp.w) continue;
+
+    const surfY = halfpipeSurfaceY(hp, cx);
+    // 近い場合に面へ吸着
+    if(p.y >= surfY - 10 && p.y <= surfY + 28){
+      p.y = surfY;
+      p.vy = 0;
+      p.onGround = true;
+
+      // depth（中央ほど加速）
+      const t = clamp((cx - hp.x) / hp.w, 0, 1);
+      const depth = Math.sin(t * Math.PI);
+      speed = Math.min(MAX_SPEED, speed + 18 + depth*28);
+    }
+  }
+
+  // 土管中処理
+  if(p._inDokan){
+    p._dokanT -= dt;
+    if(p._dokanT <= 0){
+      p._inDokan = false;
+    }else{
+      speed = Math.min(MAX_SPEED, speed + 60 * dt);
+    }
+  }
+}
 
 /* =========================
    DRAW GIMMICKS
 ========================= */
 function drawGimmicks(){
-  const cam = WORLD.scrollX;
+  const cam = CAMERA.x;
 
-  // halfpipes
-  for(const hp of GIMMICKS.halfpipes){
-    const img = ASSETS[hp.imgKey];
-    if(!img) continue;
-    const sx = hp.x - cam + player.x;
-    if(sx < -600 || sx > VIEW_W + 600) continue;
+  // guard
+  const imgGuard = ASSETS["gardw.png"];
+  for(const g of gimm.guard){
+    const sx = g.x - cam;
+    if(sx < -400 || sx > VIEW_W + 400) continue;
+    if(imgGuard && imgGuard.width){
+      ctx.drawImage(imgGuard, sx, g.y, g.w, g.h);
+    }else{
+      ctx.fillStyle = "rgba(255,255,255,0.2)";
+      ctx.fillRect(sx, g.y, g.w, g.h);
+    }
+  }
 
-    // 高さは見た目優先で固定（狭く見えないよう少し高め）
-    const h = 120;
-    const y = WORLD.groundY() - h;
-    ctx.drawImage(img, sx, y, hp.w, h);
+  // half
+  const imgBlue = ASSETS["hpr.png"];
+  const imgRed  = ASSETS["hpg.png"];
+  for(const hp of gimm.half){
+    const sx = hp.x - cam;
+    if(sx < -900 || sx > VIEW_W + 900) continue;
+    const img = (hp.type === "blue") ? imgBlue : imgRed;
+    if(img && img.width){
+      ctx.drawImage(img, sx, hp.y, hp.w, hp.h);
+    }else{
+      ctx.fillStyle = "rgba(120,180,255,0.25)";
+      ctx.fillRect(sx, hp.y, hp.w, hp.h);
+    }
   }
 
   // dokan
-  const dokan = ASSETS["dokan.png"];
-  if(dokan){
-    for(const p of GIMMICKS.dokans){
-      const sx = p.x - cam + player.x;
-      if(sx < -200 || sx > VIEW_W + 200) continue;
-      ctx.drawImage(dokan, sx, p.y, p.w, p.h);
+  const imgDk = ASSETS["dokan.png"];
+  for(const dk of gimm.dokan){
+    const sx = dk.x - cam;
+    if(sx < -300 || sx > VIEW_W + 300) continue;
+    if(imgDk && imgDk.width){
+      ctx.drawImage(imgDk, sx, dk.y, dk.w, dk.h);
+    }else{
+      ctx.fillStyle = "rgba(255,255,255,0.18)";
+      ctx.fillRect(sx, dk.y, dk.w, dk.h);
     }
   }
 
   // truck
-  const tr = ASSETS["or.png"];
-  if(tr){
-    for(const t of GIMMICKS.trucks){
-      const sx = t.x - cam + player.x;
-      if(sx < -240 || sx > VIEW_W + 240) continue;
-      ctx.drawImage(tr, sx, t.y, t.w, t.h);
+  const imgTr = ASSETS["or.png"];
+  for(const t of gimm.truck){
+    const sx = t.x - cam;
+    if(sx < -400 || sx > VIEW_W + 400) continue;
+    if(imgTr && imgTr.width){
+      ctx.drawImage(imgTr, sx, t.y, t.w, t.h);
+    }else{
+      ctx.fillStyle = "rgba(255,180,100,0.25)";
+      ctx.fillRect(sx, t.y, t.w, t.h);
     }
   }
 
   // dan
-  const dan = ASSETS["dan.png"];
-  if(dan){
-    for(const d of GIMMICKS.dans){
-      const sx = d.x - cam + player.x;
-      if(sx < -240 || sx > VIEW_W + 240) continue;
-      ctx.drawImage(dan, sx, d.y, d.w, d.h);
+  const imgDan = ASSETS["dan.png"];
+  for(const d of gimm.dan){
+    const sx = d.x - cam;
+    if(sx < -400 || sx > VIEW_W + 400) continue;
+    if(imgDan && imgDan.width){
+      ctx.drawImage(imgDan, sx, d.y, d.w, d.h);
+    }else{
+      ctx.fillStyle = "rgba(180,255,180,0.22)";
+      ctx.fillRect(sx, d.y, d.w, d.h);
     }
   }
 }
 
 /* =========================
-   HOOK DRAW: insert gimmicks behind runners
+   HOOK UPDATE/RENDER
+   PART2のupdateGame/renderGameに統合
 ========================= */
-const _oldDrawCPUs = drawCPUs;
-drawCPUs = function(){
-  // 先にギミック（足場）を描く
+const _updateGame_p2 = updateGame;
+updateGame = function(dt){
+  if(gameState === "countdown") return;
+
+  // 生成
+  spawnGimmicks();
+
+  // 元処理
+  _updateGame_p2(dt);
+
+  // ギミック反映
+  applyGimmicksPlayer(dt);
+};
+
+const _renderGame_p2 = renderGame;
+renderGame = function(){
+  // 元描画（背景/地面/プレイヤー）
+  _renderGame_p2();
+
+  // ギミック描画を前に入れたいので、ここでは再描画順を調整する
+  // → いったん全消去して順番通り描き直す（軽量）
+  ctx.clearRect(0,0,VIEW_W,VIEW_H);
+
+  // 背景
+  const bgW = BG.img.width * BG.scale;
+  const bgH = BG.img.height * BG.scale;
+  // 2000m幅を 0..BG.img.width にマップ（黒帯防止：必ず描画）
+  const camM = (CAMERA.x / PX_PER_M);
+  const srcW = Math.max(1, Math.floor(BG.img.width * (VIEW_W / (BG.widthM * PX_PER_M))));
+  const srcX = clamp(Math.floor(BG.img.width * (camM / BG.widthM)), 0, BG.img.width - srcW);
+
+  ctx.drawImage(BG.img, srcX, 0, srcW, BG.img.height, 0, 0, VIEW_W, VIEW_H);
+
+  // 地面
+  ctx.fillStyle = "#6f5e3f";
+  ctx.fillRect(0, GROUND_Y, VIEW_W, VIEW_H - GROUND_Y);
+
+  // ギミック
   drawGimmicks();
-  // CPU
-  _oldDrawCPUs();
+
+  // プレイヤー（スケボー込み）
+  const img = PLAYER.onGround ? PLAYER.imgRun : PLAYER.imgJump;
+  if(PLAYER._inDokan) ctx.globalAlpha = 0.45;
+  ctx.drawImage(img, PLAYER.x, PLAYER.y, PLAYER.w, PLAYER.h);
+  ctx.globalAlpha = 1;
+  ctx.drawImage(PLAYER.board, PLAYER.x - 4, PLAYER.y + PLAYER.h - 10, PLAYER.w + 8, 14);
+
+  // ラベル
+  ctx.fillStyle = "#fff";
+  ctx.font = "12px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("プレイヤー", PLAYER.x + PLAYER.w/2, PLAYER.y - 6);
 };
 /* =========================================================
    PART 4 / 5
-   RACE FLOW / FINISH / RESULT POPUP(全員) / GAME OVER
-   + 描画フローを整理（ギミック→CPU→プレイヤー→TOP8）
+   CPU / Ranking / Race Flow
 ========================================================= */
 
 /* =========================
    RACE CONFIG
 ========================= */
-const RACE_LIST = [
-  { name:"EASY",   goalM:  600, start:26, survive:16 },
-  { name:"NORMAL", goalM: 1000, start:16, survive: 6 },
-  { name:"HARD",   goalM: 1200, start: 8, survive: 8 } // HARDは全員表示（6+銀金を想定しやすいが、今回は残ってる全員）
+const RACES = [
+  { name:"EASY",   goal:600,  start:26, pass:16 },
+  { name:"NORMAL", goal:1000, start:16, pass:6  },
+  { name:"HARD",   goal:1200, start:8,  pass:8  },
 ];
-
-let raceIndex = 0;
-let raceTimeSec = 0;
+let raceIdx = 0;
 
 /* =========================
-   WORLD X helper
+   CPU PRESETS
 ========================= */
-function worldX(ent){
-  // playerはスクロール距離が実質の走行距離
-  return (ent === player) ? WORLD.scrollX : ent.x;
+const CPU_NAMED = [
+  { name:"フレンチ", win:0.60 },
+  { name:"レッド",   win:0.70 },
+  { name:"レッドブルー", win:0.90 },
+  { name:"ブラック", win:0.85 },
+  { name:"ホワイト", win:0.75 },
+];
+const CPU_OTHERS = "ABCDEFGHIJKLMNOPQRST".split("").map(n=>({name:n, win:0.30}));
+
+/* =========================
+   CPU ENTITY
+========================= */
+function makeCPU(cfg){
+  return {
+    name: cfg.name,
+    win: cfg.win,
+    x: -Math.random()*120,
+    y: GROUND_Y - PLAYER.h,
+    w: PLAYER.w,
+    h: PLAYER.h,
+    vy: 0,
+    onGround: true,
+    canDouble: true,
+    finished:false,
+    rank:0,
+    ring:0,
+  };
+}
+
+let CPUS = [];
+
+/* =========================
+   INIT CPUS
+========================= */
+function initCPUs(){
+  CPUS.length = 0;
+  CPU_NAMED.forEach(c=>CPUS.push(makeCPU(c)));
+  CPU_OTHERS.forEach(c=>CPUS.push(makeCPU(c)));
 }
 
 /* =========================
-   RESET / SETUP RACE
+   CPU AI
 ========================= */
-function setupRace(idx, keepRunners){
-  raceIndex = idx;
-  raceTimeSec = 0;
-
-  // gimmicks reset（走行距離が変わると生成がズレるのでリセット）
-  GIMMICKS.halfpipes.length = 0;
-  GIMMICKS.dokans.length = 0;
-  GIMMICKS.trucks.length = 0;
-  GIMMICKS.dans.length = 0;
-  OCCUPY.length = 0;
-
-  nextHalfX = 700;
-  nextDokanX = 850;
-  nextTruckX = 950;
-  nextDanX = 1200;
-
-  // player reset
-  player.x = 120;
-  player.y = WORLD.groundY() - PLAYER_BASE.height;
-  player.vy = 0;
-  player.speed = 0;
-  player.onGround = true;
-  player.jumpCount = 0;
-  player.finished = false;
-  player.finishTime = Infinity;
-
-  // WORLD distance
-  WORLD.scrollX = 0;
-
-  // runners
-  if(!keepRunners){
-    initRunners();
-  }
-
-  const cfg = RACE_LIST[idx];
-  // start人数に切る（keep時は既存をそのまま残す）
-  if(runners.length + 1 > cfg.start){
-    // 既に残っている数がstartより多い時だけ、後ろから落とす（念のため）
-    runners.length = Math.max(0, cfg.start - 1);
-  }
-
-  runners.forEach((r,i)=>{
-    r.x = -i * 18;
-    r.y = WORLD.groundY() - PLAYER_BASE.height;
-    r.vy = 0;
-    r.speed = 0;
-    r.onGround = true;
-    r.jumpCount = 0;
-
-    r.finished = false;
-    r.finishTime = Infinity;
-  });
-
-  // countdown reset
-  countdown = 3;
-  countdownTimer = 0;
-  gameState = STATE.COUNTDOWN;
-
-  hideModal();
-}
-
-/* =========================
-   FINISH CHECK
-========================= */
-function checkFinishRace(){
-  const cfg = RACE_LIST[raceIndex];
-  const goalPx = cfg.goalM * 10; // 1m=10px
-
-  // finish flags
-  if(!player.finished && worldX(player) >= goalPx){
-    player.finished = true;
-    player.finishTime = raceTimeSec;
-  }
-  runners.forEach(r=>{
-    if(!r.finished && worldX(r) >= goalPx){
-      r.finished = true;
-      r.finishTime = raceTimeSec + (Math.random()*0.15); // 同着崩し
-    }
-  });
-
-  // 全員ゴールしたらリザルトへ
-  const all = [player, ...runners];
-  const allFinished = all.every(r=>r.finished);
-  if(allFinished){
-    showResultAndEliminate();
+function cpuJump(cpu){
+  if(cpu.onGround){
+    cpu.vy = JUMP_VEL;
+    cpu.onGround = false;
+  }else if(cpu.canDouble){
+    cpu.vy = DOUBLE_JUMP_VEL;
+    cpu.canDouble = false;
   }
 }
 
-/* =========================
-   RESULT MODAL (DOM) - 全員分スクロール
-========================= */
-let modalRoot = null;
-let modalTitle = null;
-let modalBody = null;
-let modalBtnNext = null;
-let modalBtnClose = null;
+function cpuThink(cpu){
+  const look = 160 + cpu.win*200;
+  const cx = cpu.x + CAMERA.x + look;
 
-function ensureModal(){
-  if(modalRoot) return;
-
-  modalRoot = document.createElement("div");
-  modalRoot.style.position = "fixed";
-  modalRoot.style.left = "0";
-  modalRoot.style.top = "0";
-  modalRoot.style.width = "100vw";
-  modalRoot.style.height = "100vh";
-  modalRoot.style.zIndex = "999999";
-  modalRoot.style.display = "none";
-  modalRoot.style.background = "rgba(0,0,0,0.55)";
-  modalRoot.style.backdropFilter = "blur(6px)";
-
-  const panel = document.createElement("div");
-  panel.style.position = "absolute";
-  panel.style.left = "50%";
-  panel.style.top = "50%";
-  panel.style.transform = "translate(-50%,-50%)";
-  panel.style.width = "min(92vw, 420px)";
-  panel.style.maxHeight = "min(80vh, 560px)";
-  panel.style.background = "rgba(10,10,14,0.92)";
-  panel.style.border = "1px solid rgba(255,255,255,0.12)";
-  panel.style.borderRadius = "16px";
-  panel.style.overflow = "hidden";
-  panel.style.display = "flex";
-  panel.style.flexDirection = "column";
-
-  modalTitle = document.createElement("div");
-  modalTitle.style.padding = "14px 14px 10px";
-  modalTitle.style.color = "#fff";
-  modalTitle.style.font = "800 16px system-ui";
-  modalTitle.style.borderBottom = "1px solid rgba(255,255,255,0.10)";
-  modalTitle.textContent = "RESULT";
-
-  modalBody = document.createElement("div");
-  modalBody.style.padding = "10px 12px";
-  modalBody.style.overflow = "auto";
-  modalBody.style.color = "#fff";
-  modalBody.style.font = "13px system-ui";
-  modalBody.style.lineHeight = "1.55";
-
-  const footer = document.createElement("div");
-  footer.style.display = "flex";
-  footer.style.gap = "10px";
-  footer.style.padding = "12px";
-  footer.style.borderTop = "1px solid rgba(255,255,255,0.10)";
-
-  modalBtnNext = document.createElement("button");
-  modalBtnNext.textContent = "次のレースへ";
-  modalBtnNext.style.flex = "1";
-  modalBtnNext.style.padding = "12px 12px";
-  modalBtnNext.style.borderRadius = "12px";
-  modalBtnNext.style.border = "none";
-  modalBtnNext.style.font = "800 14px system-ui";
-  modalBtnNext.style.color = "#fff";
-  modalBtnNext.style.background = "rgba(255,255,255,0.18)";
-
-  modalBtnClose = document.createElement("button");
-  modalBtnClose.textContent = "閉じる";
-  modalBtnClose.style.flex = "1";
-  modalBtnClose.style.padding = "12px 12px";
-  modalBtnClose.style.borderRadius = "12px";
-  modalBtnClose.style.border = "none";
-  modalBtnClose.style.font = "800 14px system-ui";
-  modalBtnClose.style.color = "#fff";
-  modalBtnClose.style.background = "rgba(255,255,255,0.10)";
-
-  modalBtnClose.addEventListener("pointerdown", ()=>hideModal());
-
-  footer.appendChild(modalBtnNext);
-  footer.appendChild(modalBtnClose);
-
-  panel.appendChild(modalTitle);
-  panel.appendChild(modalBody);
-  panel.appendChild(footer);
-
-  modalRoot.appendChild(panel);
-  document.body.appendChild(modalRoot);
-}
-
-function showModal(){
-  ensureModal();
-  modalRoot.style.display = "block";
-}
-function hideModal(){
-  if(!modalRoot) return;
-  modalRoot.style.display = "none";
-}
-
-/* =========================
-   RESULT + ELIMINATION
-   ・上位survive人だけ残す
-   ・プレイヤーが落ちたら即GAME OVER
-========================= */
-function showResultAndEliminate(){
-  const cfg = RACE_LIST[raceIndex];
-
-  const all = [player, ...runners];
-  all.sort((a,b)=>a.finishTime - b.finishTime);
-
-  // rank付与
-  all.forEach((r,i)=>r.rank = i+1);
-
-  // survive list
-  const survivors = all.slice(0, cfg.survive);
-  const playerSurvive = survivors.includes(player);
-
-  // リザルト表示（全員）
-  ensureModal();
-  modalTitle.textContent = `RESULT - ${cfg.name}（上位${cfg.survive}通過）`;
-
-  let html = "";
-  html += `<div style="margin-bottom:10px;opacity:.9">Goal: ${cfg.goalM}m</div>`;
-  all.forEach(r=>{
-    const name = (r===player) ? "YOU" : r.name;
-    const time = (isFinite(r.finishTime) ? r.finishTime.toFixed(2)+"s" : "--");
-    const pass = survivors.includes(r) ? "✅" : "❌";
-    const style = (r===player)
-      ? "color:#00ffd0;font-weight:800;"
-      : (survivors.includes(r) ? "font-weight:700;" : "opacity:.72;");
-
-    html += `<div style="padding:4px 0;${style}">
-      ${r.rank}. ${name} - ${time} ${pass}
-    </div>`;
-  });
-  modalBody.innerHTML = html;
-
-  // 次へ
-  modalBtnNext.onclick = ()=>{
-    hideModal();
-    if(!playerSurvive){
-      showGameOver();
+  // トラック回避（必須）
+  for(const t of gimm.truck){
+    if(t.x > cpu.x + CAMERA.x && t.x < cx){
+      cpuJump(cpu);
       return;
     }
+  }
 
-    // 次レースへ：survivorsからplayer以外を runners に残す
-    const next = raceIndex + 1;
-    if(next >= RACE_LIST.length){
-      // 全レース終了：最終結果のまま停止
-      gameState = STATE.RESULT;
-      showModal();
-      modalTitle.textContent = `FINAL RESULT`;
+  // ハーフパイプ積極利用（強CPUほど）
+  for(const hp of gimm.half){
+    if(hp.x > cpu.x + CAMERA.x && hp.x < cx){
+      if(Math.random() < cpu.win) cpuJump(cpu);
       return;
     }
+  }
 
-    // survivors からプレイヤー以外を抽出して runners を再構成
-    const nextRunners = survivors.filter(r=>r!==player).map(r=>{
-      // cpuデータを引き継ぐ
-      const cpu = createCPU(r.name, r.winRate ?? 0.30);
-      cpu.winRate = r.winRate ?? cpu.winRate;
-      return cpu;
-    });
+  // 土管狙い（高win）
+  for(const dk of gimm.dokan){
+    if(dk.x > cpu.x + CAMERA.x && dk.x < cx){
+      if(cpu.win >= 0.7) cpuJump(cpu);
+      return;
+    }
+  }
 
-    runners.length = 0;
-    nextRunners.forEach(r=>runners.push(r));
-
-    // 次レース開始（keepRunners=true）
-    setupRace(next, true);
-  };
-
-  gameState = STATE.RESULT;
-  showModal();
+  // 低確率ランダムジャンプ
+  if(Math.random() < 0.01 + cpu.win*0.02){
+    cpuJump(cpu);
+  }
 }
 
 /* =========================
-   GAME OVER
+   UPDATE CPU
 ========================= */
-function showGameOver(){
-  ensureModal();
-  modalTitle.textContent = "GAME OVER";
-  modalBody.innerHTML = `<div style="padding:8px 0;line-height:1.6">
-    あなたは脱落しました。<br>
-    もう一度最初から挑戦しますか？
-  </div>`;
-  modalBtnNext.textContent = "最初から";
-  modalBtnNext.onclick = ()=>{
-    modalBtnNext.textContent = "次のレースへ";
-    setupRace(0, false);
-  };
-  showModal();
+function updateCPU(cpu, dt){
+  cpuThink(cpu);
+
+  cpu.vy += GRAVITY * dt;
+  cpu.vy = Math.min(cpu.vy, MAX_FALL);
+  cpu.y += cpu.vy * dt;
+
+  // 地面
+  if(cpu.y + cpu.h >= GROUND_Y){
+    cpu.y = GROUND_Y - cpu.h;
+    cpu.vy = 0;
+    cpu.onGround = true;
+    cpu.canDouble = true;
+  }else{
+    cpu.onGround = false;
+  }
+
+  // 前進
+  cpu.x += (speed * (0.8 + cpu.win*0.4)) * dt;
+
+  // ギミック適用（PART3の関数を流用）
+  applyGimmicksPlayer({
+    x: cpu.x - CAMERA.x,
+    y: cpu.y,
+    w: cpu.w,
+    h: cpu.h,
+    vy: cpu.vy,
+    onGround: cpu.onGround,
+    canDouble: cpu.canDouble,
+    _inDokan: cpu._inDokan,
+    _dokanT: cpu._dokanT
+  }, dt);
 }
 
 /* =========================
-   RENDER ORDER FIX
-   ギミック→CPU→プレイヤー→TOP8
+   RANKING
 ========================= */
-function drawPlayerSprite(){
-  const img = ASSETS["PL1.png.png"];
-  if(!img) return;
-  ctx.save();
-  if(player._inDokan) ctx.globalAlpha = 0.45;
-  ctx.drawImage(img, player.x, player.y, PLAYER_BASE.width, PLAYER_BASE.height);
-  ctx.restore();
+function updateRanking(){
+  const all = [{isPlayer:true, x:dist}, ...CPUS.map(c=>({cpu:c, x:c.x}))];
+  all.sort((a,b)=>b.x - a.x);
+  all.forEach((r,i)=>{
+    if(r.isPlayer) PLAYER.rank = i+1;
+    else r.cpu.rank = i+1;
+  });
+}
+
+/* =========================
+   DRAW RANK (ALL)
+========================= */
+function drawRanking(){
+  const pad = 10;
+  const w = 160;
+  let y = UI.topMargin + 8;
+
+  ctx.fillStyle = "rgba(0,0,0,0.45)";
+  ctx.fillRect(pad, y, w, VIEW_H - y - 20);
 
   ctx.fillStyle = "#fff";
-  ctx.font = "10px sans-serif";
-  ctx.textAlign = "center";
-  ctx.fillText("プレイヤー", player.x + PLAYER_BASE.width/2, player.y - 6);
-}
+  ctx.font = "12px sans-serif";
+  ctx.fillText(`順位 (${RACES[raceIdx].name})`, pad+8, y+16);
 
-function renderRunScene(){
-  // 背景
-  drawBackground();
+  let line = 0;
+  const all = [{name:"YOU", rank:PLAYER.rank}, ...CPUS.map(c=>({name:c.name, rank:c.rank}))];
+  all.sort((a,b)=>a.rank - b.rank);
 
-  // ギミック（プレイヤー基準スクロール）
-  drawGimmicks();
-
-  // CPU
-  // CPUは worldX 基準で画面に出す（スクロールに追従）
-  const img = ASSETS["PL1.png.png"];
-  if(img){
-    for(const cpu of runners){
-      const sx = cpu.x - WORLD.scrollX + player.x;
-      if(sx < -80 || sx > VIEW_W + 80) continue;
-
-      ctx.save();
-      if(cpu._inDokan) ctx.globalAlpha = 0.45;
-      ctx.drawImage(img, sx, cpu.y, PLAYER_BASE.width, PLAYER_BASE.height);
-      ctx.restore();
-
-      ctx.fillStyle = "#ddd";
-      ctx.font = "9px sans-serif";
-      ctx.textAlign = "center";
-      ctx.fillText(cpu.name, sx + PLAYER_BASE.width/2, cpu.y - 4);
-    }
+  for(const r of all){
+    const ty = y + 36 + line*14;
+    if(ty > VIEW_H - 20) break;
+    ctx.fillText(`${r.rank}. ${r.name}`, pad+8, ty);
+    line++;
   }
-
-  // プレイヤー
-  drawPlayerSprite();
-
-  // TOP8（Canvas）
-  drawTop8();
-
-  // 右下 version（ボタン被り回避：右下固定のまま、UI下端なのでOK）
-  drawVersion();
 }
 
 /* =========================
-   LOOP REPLACE
-   （既存loopは次フレームからこの定義が使われます）
+   GOAL / RESULT
 ========================= */
-loop = function(t){
-  delta = t - lastTime;
-  lastTime = t;
+function checkGoal(){
+  const goalPx = RACES[raceIdx].goal * PX_PER_M;
+  if(dist >= goalPx){
+    finishRace();
+  }
+}
 
-  // clear
-  ctx.clearRect(0, 0, VIEW_W, VIEW_H);
+function finishRace(){
+  gameState = "result";
+}
 
-  if (!assetsReady) {
-    ctx.fillStyle = "#fff";
-    ctx.font = "16px sans-serif";
-    ctx.textAlign = "center";
-    ctx.fillText("Loading...", VIEW_W / 2, VIEW_H / 2);
-    requestAnimationFrame(loop);
+/* =========================
+   RESULT SCREEN
+========================= */
+function renderResult(){
+  ctx.fillStyle = "rgba(0,0,0,0.7)";
+  ctx.fillRect(0,0,VIEW_W,VIEW_H);
+
+  ctx.fillStyle = "#fff";
+  ctx.font = "bold 28px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("RESULT", VIEW_W/2, VIEW_H*0.2);
+
+  const all = [{name:"YOU", rank:PLAYER.rank}, ...CPUS.map(c=>({name:c.name, rank:c.rank}))];
+  all.sort((a,b)=>a.rank - b.rank);
+
+  ctx.font = "14px sans-serif";
+  let y = VIEW_H*0.3;
+  for(const r of all){
+    ctx.fillText(`${r.rank}. ${r.name}`, VIEW_W/2, y);
+    y += 18;
+  }
+
+  ctx.font = "16px sans-serif";
+  ctx.fillText("タップで次へ", VIEW_W/2, VIEW_H*0.85);
+}
+
+/* =========================
+   ADVANCE RACE
+========================= */
+function nextRace(){
+  const pass = RACES[raceIdx].pass;
+
+  if(PLAYER.rank > pass){
+    alert("GAME OVER");
+    location.reload();
     return;
   }
 
-  switch (gameState) {
-    case STATE.BOOT:
-      setupRace(0, false);
-      break;
+  // 生き残りCPU
+  CPUS = CPUS.filter(c=>c.rank <= pass);
 
-    case STATE.COUNTDOWN:
-      drawBackground();
-      countdownTimer += delta;
-      if (countdownTimer > 1000) {
-        countdown--;
-        countdownTimer = 0;
-        if (countdown <= 0) gameState = STATE.RUN;
-      }
-      ctx.fillStyle = "#fff";
-      ctx.font = "64px sans-serif";
-      ctx.textAlign = "center";
-      ctx.fillText(Math.max(1, countdown), VIEW_W / 2, VIEW_H / 2);
-      drawVersion();
-      break;
-
-    case STATE.RUN:
-      // time
-      raceTimeSec += (delta / 1000);
-
-      // 生成・更新
-      spawnGimmicks();
-      updatePlayer();   // ここでギミック適用もされる
-      updateRunners();  // CPU側はupdateCPU内でギミック回避と適用済み
-      updateRanking();
-
-      // ゴール判定
-      checkFinishRace();
-
-      // 端制御（2000m背景の外に行かない）
-      const maxScroll = Math.max(0, TRACK_PIXELS - VIEW_W);
-      WORLD.scrollX = Math.max(0, Math.min(WORLD.scrollX, maxScroll));
-
-      // 描画
-      renderRunScene();
-
-      // 入力1フレーム消費
-      resetInputFrame();
-      INPUT.jump = false;
-      INPUT.boost = false;
-      break;
-
-    case STATE.RESULT:
-      // 背景だけは描いておく（後ろが真っ黒にならない）
-      drawBackground();
-      drawVersion();
-      break;
+  raceIdx++;
+  if(raceIdx >= RACES.length){
+    alert("ALL CLEAR!");
+    location.reload();
+    return;
   }
 
-  requestAnimationFrame(loop);
+  // リセット
+  dist = 0;
+  speed = BASE_SPEED;
+  CAMERA.x = 0;
+  resetGimmicks();
+  gameState = "countdown";
+}
+
+/* =========================
+   HOOK update/render
+========================= */
+const _updateGame_p3 = updateGame;
+updateGame = function(dt){
+  if(gameState === "countdown") return;
+  if(gameState === "result") return;
+
+  _updateGame_p3(dt);
+
+  CPUS.forEach(c=>updateCPU(c, dt));
+  updateRanking();
+  checkGoal();
 };
 
-// すでに回っているRAFはそのまま次フレームから新loopが使われる
+const _renderGame_p3 = renderGame;
+renderGame = function(){
+  if(gameState === "result"){
+    renderResult();
+    return;
+  }
+
+  _renderGame_p3();
+  drawRanking();
+};
+
+/* =========================
+   INPUT: RESULT TAP
+========================= */
+canvas.addEventListener("pointerdown", ()=>{
+  if(gameState === "result"){
+    nextRace();
+  }
+});
 /* =========================================================
    PART 5 / 5
-   RINGS / GUARDRAIL / WATER / HARD追加CPU / 微調整
+   Rings / UI polish / Version / Safety
 ========================================================= */
 
 /* =========================
-   RINGS (個別取得・共有消失しない)
+   RINGS
 ========================= */
-const RINGS = []; // {x,y,r}
-
-let nextRingX = 420;
+const RINGS = [];
+let nextRing = 360;
 
 function spawnRings(){
-  const cam = WORLD.scrollX;
-  const ahead = cam + VIEW_W * 1.6;
-
-  while(nextRingX < ahead && nextRingX < TRACK_PIXELS - 200){
+  const ahead = CAMERA.x + VIEW_W * 2.0;
+  while(nextRing < ahead){
     const air = Math.random() < 0.45;
-    const x = nextRingX;
+    const x = nextRing;
     const y = air
-      ? (WORLD.groundY() - 120 - Math.random()*160)
-      : (WORLD.groundY() - 42);
+      ? GROUND_Y - 120 - Math.random()*160
+      : GROUND_Y - 34;
 
     RINGS.push({x,y,r:14});
-    nextRingX += 160 + Math.random()*140;
+    nextRing += 180 + Math.random()*160;
+  }
+}
+
+function applyRingToEntity(ent){
+  for(const ring of RINGS){
+    const cx = (ent.x + CAMERA.x) + ent.w/2;
+    const cy = ent.y + ent.h/2;
+    if(
+      cx > ring.x-ring.r && cx < ring.x+ring.r &&
+      cy > ring.y-ring.r && cy < ring.y+ring.r
+    ){
+      ent.ring = (ent.ring||0) + 1;
+      if(ent.ring >= 10){
+        ent.ring = 0;
+        speed = Math.min(MAX_SPEED, speed + 120); // ブースト半分くらい
+      }
+    }
   }
 }
 
 function drawRings(){
   const img = ASSETS["ringtap.png"];
-  if(!img) return;
-
   for(const ring of RINGS){
-    const sx = ring.x - WORLD.scrollX + player.x;
-    if(sx < -40 || sx > VIEW_W + 40) continue;
-    ctx.drawImage(img, sx-ring.r, ring.y-ring.r, ring.r*2, ring.r*2);
-  }
-}
-
-function applyRings(ent){
-  for(const ring of RINGS){
-    const hit =
-      (ent.x + PLAYER_BASE.width/2) > (ring.x-ring.r) &&
-      (ent.x + PLAYER_BASE.width/2) < (ring.x+ring.r) &&
-      (ent.y + PLAYER_BASE.height/2) > (ring.y-ring.r) &&
-      (ent.y + PLAYER_BASE.height/2) < (ring.y+ring.r);
-
-    if(hit){
-      // 個別取得：ringは消さない
-      ent.ring = (ent.ring||0) + 1;
-      if(ent.ring >= 10){
-        ent.ring = 0;
-        // ブーストの半分程度
-        ent.speed = Math.min(ent.speed + 6, PLAYER_BASE.maxSpeed + 80);
-      }
+    const sx = ring.x - CAMERA.x;
+    if(sx < -40 || sx > VIEW_W+40) continue;
+    if(img && img.width){
+      ctx.drawImage(img, sx-ring.r, ring.y-ring.r, ring.r*2, ring.r*2);
+    }else{
+      ctx.fillStyle = "rgba(255,255,0,0.6)";
+      ctx.beginPath();
+      ctx.arc(sx, ring.y, ring.r, 0, Math.PI*2);
+      ctx.fill();
     }
   }
 }
 
 /* =========================
-   GUARD RAIL（低め・少なめ・被り防止）
+   UI : VERSION (操作エリアと被らない)
 ========================= */
-const GUARDS = [];
-let nextGuardX = 780;
-
-function spawnGuards(){
-  const ahead = WORLD.scrollX + VIEW_W * 1.6;
-  while(nextGuardX < ahead && nextGuardX < TRACK_PIXELS - 200){
-    const w = 180;
-    const h = 36; // 低め
-    const x = nextGuardX;
-    const y = WORLD.groundY() - h;
-
-    if(isFreeRange(x-30, x+w+30)){
-      GUARDS.push({x,y,w,h});
-      reserveRange(x-30, x+w+30, "guard");
-    }
-    nextGuardX += 1200 + Math.random()*800;
-  }
-}
-
-function drawGuards(){
-  const img = ASSETS["gardw.png"];
-  if(!img) return;
-  for(const g of GUARDS){
-    const sx = g.x - WORLD.scrollX + player.x;
-    if(sx < -200 || sx > VIEW_W + 200) continue;
-    ctx.drawImage(img, sx, g.y, g.w, g.h);
-  }
-}
-
-function applyGuards(ent){
-  for(const g of GUARDS){
-    if(aabb(ent.x, ent.y, PLAYER_BASE.width, PLAYER_BASE.height, g.x, g.y, g.w, g.h)){
-      if(landOnTop(ent, g)){
-        ent.y = g.y - PLAYER_BASE.height;
-        ent.vy = 0;
-        ent.onGround = true;
-        ent.speed = Math.min(ent.speed + 1.4, PLAYER_BASE.maxSpeed + 40);
-      }
-    }
-  }
+function drawVersion(){
+  ctx.fillStyle = "rgba(0,0,0,0.5)";
+  ctx.fillRect(VIEW_W-72, VIEW_H-26, 64, 20);
+  ctx.fillStyle = "#fff";
+  ctx.font = "11px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText(GAME_VERSION, VIEW_W-40, VIEW_H-12);
 }
 
 /* =========================
-   WATER（踏むと少し減速）
+   UI : PLAYER LABEL SAFE
 ========================= */
-const WATERS = [];
-let nextWaterX = 980;
-
-function spawnWaters(){
-  const ahead = WORLD.scrollX + VIEW_W * 1.6;
-  while(nextWaterX < ahead && nextWaterX < TRACK_PIXELS - 200){
-    const w = 120;
-    const h = 18;
-    const x = nextWaterX;
-    const y = WORLD.groundY() - h;
-
-    if(isFreeRange(x-30, x+w+30)){
-      WATERS.push({x,y,w,h});
-      reserveRange(x-30, x+w+30, "water");
-    }
-    nextWaterX += 1500 + Math.random()*900;
-  }
-}
-
-function drawWaters(){
-  ctx.save();
-  ctx.fillStyle = "rgba(80,140,255,0.45)";
-  for(const w of WATERS){
-    const sx = w.x - WORLD.scrollX + player.x;
-    if(sx < -200 || sx > VIEW_W + 200) continue;
-    ctx.fillRect(sx, w.y, w.w, w.h);
-  }
-  ctx.restore();
-}
-
-function applyWaters(ent){
-  for(const w of WATERS){
-    if(aabb(ent.x, ent.y, PLAYER_BASE.width, PLAYER_BASE.height, w.x, w.y, w.w, w.h)){
-      ent.speed = Math.max(ent.speed - 1.6, 0);
-    }
-  }
+function drawPlayerLabel(){
+  const y = Math.max(PLAYER.y - 8, UI.topMargin + 10);
+  ctx.fillStyle = "#fff";
+  ctx.font = "12px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("プレイヤー", PLAYER.x + PLAYER.w/2, y);
 }
 
 /* =========================
-   HARD追加CPU（銀・金）
+   HOOK UPDATE / RENDER
 ========================= */
-function addHardBosses(){
-  runners.push(createCPU("シルバー", 0.95));
-  runners.push(createCPU("ゴールド", 0.95));
-}
+const _updateGame_p4 = updateGame;
+updateGame = function(dt){
+  if(gameState === "countdown") return;
+  if(gameState === "result") return;
 
-/* =========================
-   HOOK: setupRace 拡張
-========================= */
-const _setupRace = setupRace;
-setupRace = function(idx, keep){
-  _setupRace(idx, keep);
-
-  // HARD開始時に追加
-  if(RACE_LIST[idx].name === "HARD"){
-    addHardBosses();
-  }
-
-  // ring reset
-  RINGS.length = 0;
-  nextRingX = 420;
-
-  // guard/water reset
-  GUARDS.length = 0;
-  WATERS.length = 0;
-  nextGuardX = 780;
-  nextWaterX = 980;
-};
-
-/* =========================
-   HOOK: updatePlayer / updateCPU
-========================= */
-const _updatePlayerFinal = updatePlayer;
-updatePlayer = function(){
   spawnRings();
-  spawnGuards();
-  spawnWaters();
 
-  _updatePlayerFinal();
+  _updateGame_p4(dt);
 
-  applyRings(player);
-  applyGuards(player);
-  applyWaters(player);
+  // プレイヤー
+  applyRingToEntity(PLAYER);
+
+  // CPU
+  CPUS.forEach(c=>applyRingToEntity(c));
 };
 
-const _updateCPUFinal = updateCPU;
-updateCPU = function(cpu){
-  _updateCPUFinal(cpu);
-  applyRings(cpu);
-  applyGuards(cpu);
-  applyWaters(cpu);
+const _renderGame_p4 = renderGame;
+renderGame = function(){
+  if(gameState === "result"){
+    _renderGame_p4();
+    return;
+  }
+
+  // 元描画（背景・地面・ギミック・プレイヤー）
+  _renderGame_p4();
+
+  // リング
+  drawRings();
+
+  // ラベル上書き（被り防止）
+  drawPlayerLabel();
+
+  // バージョン
+  drawVersion();
 };
 
 /* =========================
-   DRAW ADDITIONS
+   SAFETY
 ========================= */
-const _drawGimmicksFinal = drawGimmicks;
-drawGimmicks = function(){
-  _drawGimmicksFinal();
-  drawRings();
-  drawGuards();
-  drawWaters();
-};
+// NaN防止
+setInterval(()=>{
+  if(!Number.isFinite(dist)) dist = 0;
+  if(!Number.isFinite(speed)) speed = BASE_SPEED;
+}, 1000);
