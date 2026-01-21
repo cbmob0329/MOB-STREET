@@ -1,14 +1,14 @@
-// game.js v6.1  PART 1 / 5
-// VERSION: v6.1
-// Fix focus (this release):
-// - canvasが操作UIに食い込んでキャラが埋まる問題（JSのみでプレイ領域に自動フィット）
-// - 構文/初期化の安定化（レース切替・名前付きゴースト等）
-// NOTE: PART2〜5で、ワールド生成/物理/描画/進行を仕上げます。
+// game.js v6.2  PART 1 / 5
+// VERSION: v6.2
+// Fix:
+// - cover描画で縦が切れて「地面/キャラが見えない」問題 → contain + 余白を空色で塗る（黒帯なし）
+// - canvasが操作UIに食い込む問題は維持して解決
+// NOTE: PART4で描画（contain+塗り）を実装します
 
 (() => {
 "use strict";
 
-const VERSION = "v6.1";
+const VERSION = "v6.2";
 
 /* =======================
    DOM
@@ -23,10 +23,6 @@ const overlayMsg = document.getElementById("overlayMsg");
 const btnJump = document.getElementById("btnJump");
 const btnBoost = document.getElementById("btnBoost");
 const btnJumpBoost = document.getElementById("btnJumpBoost"); // 将来アイテム枠（今は無効）
-
-// HUDがあれば拾う（無くても動く）
-const hudSpeed = document.getElementById("hudSpeed");
-const hudDist  = document.getElementById("hudDist");
 
 /* =======================
    MOBILE LOCK (no select/zoom)
@@ -62,7 +58,7 @@ const CONFIG = {
   RING_BOOST_ADD: 110,
   RING_BOOST_TIME: 0.55,
 
-  // player stock: 5s regen, max5, start0
+  // player stock: 5s regen, max5, start0（ロジック）
   STOCK_MAX: 5,
   STOCK_REGEN: 5.0,
   STOCK_START: 0,
@@ -113,7 +109,7 @@ async function loadAssets(){
 
 /* =======================
    PLAY AREA FIT (JS only)
-   canvas下端を操作UI上端に合わせる（埋まり問題の根本対策）
+   canvas下端を操作UI上端に合わせる（埋まり問題の対策）
 ======================= */
 function fitCanvasToPlayArea(){
   let top = null;
@@ -129,12 +125,10 @@ function fitCanvasToPlayArea(){
     }
   }
 
-  // フォールバック：下35%は操作域
   if(top === null){
     top = Math.floor(window.innerHeight * 0.65);
   }
 
-  // iOSのアドレスバー変動対策で少し余白
   const playH = Math.max(220, Math.floor(top - 6));
 
   canvas.style.width  = "100%";
@@ -204,7 +198,7 @@ if(!nextFixed){
    STATE / RUNNER
 ======================= */
 const state = {
-  phase:"loading", // loading / countdown / run / result
+  phase:"loading",
   raceIndex:0,
   time:0,
   lastTime:0,
@@ -278,11 +272,9 @@ function initRace(idx){
   for(const g of NAMED_GHOSTS) state.runners.push(createRunner(g.name,false,g.wr));
   for(const l of LETTERS) state.runners.push(createRunner(l,false,0.30));
 
-  // ステージごとの人数
   const race = CONFIG.RACES[idx];
   state.runners = state.runners.slice(0, race.start);
 
-  // 初期化
   for(const r of state.runners){
     r.x=0; r.y=0; r.vy=0;
     r.onGround=true; r.onRail=false; r.onPipe=false;
@@ -302,13 +294,9 @@ function initRace(idx){
   state.phase = "countdown";
   nextFixed.style.display = "none";
 
-  // ★PART2で定義：レース切替時に必ずワールドを初期化
   if(typeof resetWorldForRace === "function") resetWorldForRace();
 }
 
-/* =======================
-   RANK
-======================= */
 function updateRank(){
   const p = state.runners[state.playerIndex];
   let better = 0;
@@ -336,16 +324,19 @@ async function bootCore(){
   state.lastTime = performance.now();
 }
 
-/* 初回と回転対策 */
 fitCanvasToPlayArea();
 resizeCanvas();
 
+window.addEventListener("resize", ()=>{
+  fitCanvasToPlayArea();
+  resizeCanvas();
+});
+
 /* === PART2 START === */
- // game.js v6.1  PART 2 / 5
+   // game.js v6.2  PART 2 / 5
 // WORLD / GROUND / SPAWN / OBJECT SIZE NORMALIZE
-// - ガードレール・ハーフパイプを地面基準サイズに正規化
-// - レース切替時のスポーン状態リセット
-// - 第2ステージ以降で障害物が出ない問題を解消
+// - ここは v6.1 と同等（埋まり問題の本丸は PART4 の描画 contain にあります）
+// - ただし「次ステージ以降で出ない」を防ぐため resetWorldForRace を必ず使う前提
 
 /* =======================
    WORLD
@@ -384,7 +375,7 @@ function resetWorldForRace(){
    GROUND
 ======================= */
 function resetGround(){
-  // 画面サイズに対して安定する地面高さ
+  // 安定した地面高さ（UI埋まりの原因ではない）
   world.groundH = 72;
   world.groundY = CONFIG.LOGICAL_H - world.groundH;
 }
@@ -429,8 +420,8 @@ function addRail(x){
   const img = IMAGES.rail;
   if(!img) return;
 
-  // ★地面高さ基準で固定（cover描画でも巨大化しない）
-  const h = Math.floor(world.groundH * 0.62); // 0.55〜0.70で調整可
+  // 地面高さ基準で固定（巨大化しない）
+  const h = Math.floor(world.groundH * 0.62);
   const scale = h / img.height;
   const w = Math.floor(img.width * scale);
 
@@ -442,15 +433,15 @@ function addRail(x){
   });
 }
 
-// ---- ハーフパイプ（正規化・大きめ） ----
+// ---- ハーフパイプ（正規化・少し大きめ） ----
 function addPipe(x){
   const img = Math.random() < 0.5 ? IMAGES.hpr : IMAGES.hpg;
   if(!img) return;
 
-  // ★この画面サイズ用に少し大きめ
-  const h = Math.floor(world.groundH * 0.55); // 高さを明確に
+  // この画面サイズ用に少し大きめ
+  const h = Math.floor(world.groundH * 0.60);        // 高さ
   const scale = h / img.height;
-  const w = Math.floor(img.width * scale * 1.15); // 横も気持ち大きく
+  const w = Math.floor(img.width * scale * 1.22);    // 横を大きめ
 
   world.pipes.push({
     x,
@@ -473,9 +464,9 @@ function addPuddle(x){
 
 // ---- リング（空中にも出る） ----
 function addRing(x){
-  const air = Math.random() < 0.45;
+  const air = Math.random() < 0.50;
   const y = air
-    ? world.groundY - rand(70, 120)
+    ? world.groundY - rand(75, 135)
     : world.groundY - 28;
 
   world.rings.push({
@@ -495,12 +486,12 @@ function rectHit(ax,ay,aw,ah,bx,by,bw,bh){
 }
 
 /* === PART3 START === */
- // game.js v6.1  PART 3 / 5
+   // game.js v6.2  PART 3 / 5
 // RUN / JUMP / RAIL / PIPE (SLOPE) / RING EFFECT
-// - ハーフパイプで必ず上がる（sinカーブ）
-// - レールに乗ると軽く加速
-// - リング10個で小ブースト
-// - AIブーストは5秒CDで抑制
+// - ハーフパイプは必ず上がる（sinカーブ）
+// - レールは着地判定を厳密化
+// - リング10個で小加速
+// - プレイヤーのブースト回復は5秒/1、AIも同条件
 
 /* =======================
    RUN UPDATE
@@ -510,8 +501,7 @@ function updateRun(dt){
   const player = state.runners[state.playerIndex];
 
   // カメラ：常にプレイヤー左寄せ
-  state.cameraX = player.x - 80;
-  if(state.cameraX < 0) state.cameraX = 0;
+  state.cameraX = Math.max(0, player.x - Math.floor(CONFIG.LOGICAL_W * 0.18));
 
   spawnWorld(state.cameraX);
 
@@ -532,12 +522,10 @@ function updateRun(dt){
 
       if(r.aiCd <= 0){
         r.aiCd = rand(0.25, 0.55);
-        if(Math.random() < 0.015){
-          doJump(r);
-        }
+        if(Math.random() < 0.015) doJump(r);
       }
 
-      // AIブースト（勝率＋5秒CD）
+      // AIブースト（5秒CD）
       if(r.aiBoostCd <= 0 && Math.random() < r.winRate * 0.12){
         r.aiBoostCd = CONFIG.AI_BOOST_COOLDOWN;
         startBoost(r, CONFIG.BOOST_ADD, CONFIG.BOOST_TIME);
@@ -575,11 +563,11 @@ function updateRun(dt){
       // 0→1 の進行度
       r.pipeT = clamp((r.x - r.pipeRef.x) / r.pipeRef.w, 0, 1);
 
-      // 半円カーブ
+      // 半円カーブ（必ず上がる）
       const angle = Math.PI * r.pipeT;
       const lift = Math.sin(angle);
 
-      // 位置更新（★必ず上がる）
+      // 位置更新（下端基準）
       r.y = r.pipeRef.y + r.pipeRef.h - lift * r.pipeRef.h - r.h;
 
       // 坂加速
@@ -590,6 +578,7 @@ function updateRun(dt){
         r.onPipe = false;
         r.pipeRef = null;
         r.onGround = true;
+        r.vy = 0;
       }
     }else{
       // 重力
@@ -617,11 +606,11 @@ function updateRun(dt){
     if(!r.onPipe){
       for(const rail of world.rails){
         if(rectHit(r.x, r.y, r.w, r.h, rail.x, rail.y, rail.w, rail.h)){
-          if(r.vy >= 0 && r.y + r.h - r.vy * dt <= rail.y){
+          // 上からの着地のみ許可
+          if(r.vy >= 0 && (r.y + r.h - r.vy * dt) <= rail.y + 2){
             r.y = rail.y - r.h;
             r.vy = 0;
             r.onGround = true;
-            r.onRail = true;
             speed += 60;
           }
         }
@@ -632,7 +621,8 @@ function updateRun(dt){
     if(!r.onPipe){
       for(const pipe of world.pipes){
         if(rectHit(r.x, r.y, r.w, r.h, pipe.x, pipe.y, pipe.w, pipe.h)){
-          if(r.vy >= 0 && r.y + r.h - r.vy * dt <= pipe.y){
+          // 上からのみ侵入
+          if(r.vy >= 0 && (r.y + r.h - r.vy * dt) <= pipe.y + 2){
             r.onPipe = true;
             r.pipeRef = pipe;
             r.pipeT = 0;
@@ -703,15 +693,15 @@ function startBoost(r, power, time){
 }
 
 /* === PART4 START === */
- // game.js v6.1  PART 4 / 5
-// RENDER / COVER SCALE / DRAW ORDER FIX
-// - 左右黒帯なし（cover）
-// - キャラクターは常に最前面
-// - 地面・オブジェクト・UIの描画整理
-// - カウントダウン暗転を薄く
+   // game.js v6.2  PART 4 / 5
+// RENDER (CONTAIN) / NO CROP / HUD SAFE
+// - cover をやめて contain（縦切れ防止）
+// - 余白は空色で塗る（黒帯にならない）
+// - 地面・キャラが必ず画面内に入る
+// - HUD が被らない位置に固定
 
 /* =======================
-   DRAW BASE (COVER)
+   DRAW BASE (CONTAIN)
 ======================= */
 function beginDraw(){
   const cw = canvas.width;
@@ -720,10 +710,19 @@ function beginDraw(){
   const sx = cw / CONFIG.LOGICAL_W;
   const sy = ch / CONFIG.LOGICAL_H;
 
-  // 画面を埋める（左右黒帯なし）
-  const s = Math.max(sx, sy);
-  const ox = (cw - CONFIG.LOGICAL_W * s) * 0.5;
-  const oy = (ch - CONFIG.LOGICAL_H * s) * 0.5;
+  // ★contain（必ず全体が入る）
+  const s = Math.min(sx, sy);
+
+  const drawW = CONFIG.LOGICAL_W * s;
+  const drawH = CONFIG.LOGICAL_H * s;
+
+  const ox = (cw - drawW) * 0.5;
+  const oy = (ch - drawH) * 0.5;
+
+  // 余白を空色で塗る（黒帯防止）
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.fillStyle = "#163d7a";
+  ctx.fillRect(0,0,cw,ch);
 
   ctx.setTransform(s, 0, 0, s, ox, oy);
   ctx.imageSmoothingEnabled = false;
@@ -745,19 +744,18 @@ function drawSky(){
    STAGE / GROUND
 ======================= */
 function drawStage(){
-  // 地面影
-  ctx.fillStyle = "rgba(0,0,0,0.25)";
-  ctx.fillRect(0, world.groundY, CONFIG.LOGICAL_W, world.groundH);
-
   const img = IMAGES.stage;
   if(!img) return;
 
-  const s = world.groundH / img.height;
-  const w = Math.max(1, Math.floor(img.width * s));
-  let x = -((state.cameraX % w + w) % w);
+  const h = world.groundH;
+  const y = world.groundY;
 
+  const s = h / img.height;
+  const w = Math.floor(img.width * s);
+
+  let x = -((state.cameraX % w + w) % w);
   for(; x < CONFIG.LOGICAL_W + w; x += w){
-    ctx.drawImage(img, x, world.groundY, w, world.groundH);
+    ctx.drawImage(img, x, y, w, h);
   }
 }
 
@@ -766,10 +764,10 @@ function drawStage(){
 ======================= */
 function drawObjects(){
   // 水たまり
-  ctx.fillStyle = "rgba(120,190,255,0.55)";
+  ctx.fillStyle = "rgba(120,190,255,0.5)";
   for(const p of world.puddles){
     const sx = p.x - state.cameraX;
-    if(sx < -100 || sx > CONFIG.LOGICAL_W + 100) continue;
+    if(sx < -80 || sx > CONFIG.LOGICAL_W + 80) continue;
     ctx.fillRect(sx, p.y, p.w, p.h);
   }
 
@@ -779,7 +777,7 @@ function drawObjects(){
     for(const r of world.rings){
       if(r.taken) continue;
       const sx = r.x - state.cameraX;
-      if(sx < -100 || sx > CONFIG.LOGICAL_W + 100) continue;
+      if(sx < -60 || sx > CONFIG.LOGICAL_W + 60) continue;
       ctx.drawImage(ringImg, sx - 10, r.y - 10, 20, 20);
     }
   }
@@ -787,7 +785,7 @@ function drawObjects(){
   // ハーフパイプ
   for(const p of world.pipes){
     const sx = p.x - state.cameraX;
-    if(sx < -240 || sx > CONFIG.LOGICAL_W + 240) continue;
+    if(sx < -200 || sx > CONFIG.LOGICAL_W + 200) continue;
     ctx.drawImage(p.img, sx, p.y, p.w, p.h);
   }
 
@@ -796,14 +794,14 @@ function drawObjects(){
   if(railImg){
     for(const r of world.rails){
       const sx = r.x - state.cameraX;
-      if(sx < -200 || sx > CONFIG.LOGICAL_W + 200) continue;
+      if(sx < -160 || sx > CONFIG.LOGICAL_W + 160) continue;
       ctx.drawImage(railImg, sx, r.y, r.w, r.h);
     }
   }
 }
 
 /* =======================
-   RUNNERS (ALWAYS FRONT)
+   RUNNERS
 ======================= */
 function screenXOf(r){
   if(r.isPlayer) return Math.floor(CONFIG.LOGICAL_W * 0.18);
@@ -813,7 +811,7 @@ function screenXOf(r){
 
 function drawRunner(r){
   const sx = screenXOf(r);
-  if(sx < -100 || sx > CONFIG.LOGICAL_W + 100) return;
+  if(sx < -80 || sx > CONFIG.LOGICAL_W + 80) return;
 
   // 影
   ctx.fillStyle = "rgba(0,0,0,0.25)";
@@ -837,9 +835,9 @@ function drawRunner(r){
   if(r.isPlayer){
     ctx.font = "10px system-ui";
     ctx.textAlign = "center";
-    ctx.strokeStyle = "rgba(0,0,0,0.9)";
     ctx.lineWidth = 3;
-    ctx.fillStyle = "rgba(255,255,255,0.95)";
+    ctx.strokeStyle = "rgba(0,0,0,0.9)";
+    ctx.fillStyle = "#fff";
     ctx.strokeText("プレイヤー", sx + r.w/2, r.y - 6);
     ctx.fillText("プレイヤー", sx + r.w/2, r.y - 6);
     ctx.textAlign = "left";
@@ -847,27 +845,47 @@ function drawRunner(r){
 }
 
 /* =======================
+   HUD (SAFE AREA)
+======================= */
+function drawHUD(){
+  ctx.fillStyle = "rgba(0,0,0,0.35)";
+  ctx.fillRect(0, 0, CONFIG.LOGICAL_W, 44);
+
+  ctx.fillStyle = "#fff";
+  ctx.font = "12px system-ui";
+  ctx.fillText(`MOB STREET - 1P RUN`, 8, 16);
+
+  ctx.fillText(`SPD ${Math.floor(CONFIG.BASE_SPEED)}`, 150, 16);
+  ctx.fillText(`DIST ${Math.floor(state.runners[state.playerIndex].x / CONFIG.PX_PER_M)}`, 230, 16);
+  ctx.fillText(state.rankText, 8, 34);
+
+  ctx.font = "10px system-ui";
+  ctx.fillStyle = "rgba(255,255,255,0.6)";
+  ctx.fillText(VERSION, CONFIG.LOGICAL_W - 46, CONFIG.LOGICAL_H - 6);
+}
+
+/* =======================
    RESULT
 ======================= */
 function drawResult(){
-  ctx.fillStyle = "rgba(0,0,0,0.88)";
+  ctx.fillStyle = "rgba(0,0,0,0.85)";
   ctx.fillRect(0, 0, CONFIG.LOGICAL_W, CONFIG.LOGICAL_H);
 
-  ctx.textAlign = "center";
   ctx.fillStyle = "#fff";
-  ctx.font = "bold 28px system-ui";
-  ctx.fillText(`RESULT - ${CONFIG.RACES[state.raceIndex].name}`, CONFIG.LOGICAL_W/2, 64);
+  ctx.textAlign = "center";
+  ctx.font = "bold 26px system-ui";
+  ctx.fillText(`RESULT`, CONFIG.LOGICAL_W/2, 64);
 
   const list = [...state.runners].sort((a,b)=>a.finishTime-b.finishTime);
 
-  ctx.font = "18px system-ui";
+  ctx.font = "16px system-ui";
   let y = 120;
   for(let i=0; i<list.length && i<10; i++){
     const r = list[i];
     const t = isFinite(r.finishTime) ? `${r.finishTime.toFixed(2)}s` : "--";
-    ctx.fillStyle = r.isPlayer ? "#00ffcc" : "#ffffff";
-    ctx.fillText(`${i+1}. ${r.name}   ${t}`, CONFIG.LOGICAL_W/2, y);
-    y += 34;
+    ctx.fillStyle = r.isPlayer ? "#00ffcc" : "#fff";
+    ctx.fillText(`${i+1}. ${r.name}  ${t}`, CONFIG.LOGICAL_W/2, y);
+    y += 26;
   }
   ctx.textAlign = "left";
 }
@@ -876,32 +894,22 @@ function drawResult(){
    MAIN RENDER
 ======================= */
 function render(){
-  // 残像完全防止
-  ctx.setTransform(1,0,0,1,0,0);
-  ctx.fillStyle = "#000";
-  ctx.fillRect(0,0,canvas.width,canvas.height);
-
   beginDraw();
 
   drawSky();
   drawStage();
   drawObjects();
 
-  // キャラは最後に描く（必ず最前面）
+  // キャラは必ず最前面
   for(const r of state.runners){
-    if(!r.isPlayer && r.winRate > 0.30){
-      drawRunner(r);
-    }
+    if(!r.isPlayer && r.winRate > 0.30) drawRunner(r);
   }
   drawRunner(state.runners[state.playerIndex]);
 
-  // バージョン表示
-  ctx.font = "10px system-ui";
-  ctx.fillStyle = "rgba(255,255,255,0.6)";
-  ctx.fillText(VERSION, 8, CONFIG.LOGICAL_H - 10);
+  drawHUD();
 
   if(state.phase === "countdown"){
-    ctx.fillStyle = "rgba(0,0,0,0.14)";
+    ctx.fillStyle = "rgba(0,0,0,0.15)";
     ctx.fillRect(0,0,CONFIG.LOGICAL_W,CONFIG.LOGICAL_H);
     ctx.fillStyle = "#fff";
     ctx.font = "bold 64px system-ui";
@@ -916,122 +924,6 @@ function render(){
 }
 
 /* === PART5 START === */
-   // game.js v6.1  PART 5 / 5
-// LOOP / COUNTDOWN / NEXT / BOOT
-// - 安定したメインループ
-// - カウントダウン→レース開始
-// - リザルト後に NEXT RACE で進行
-
-/* =======================
-   COUNTDOWN
-======================= */
-function updateCountdown(dt){
-  state.countdown -= dt;
-  if(state.countdown <= 0){
-    state.phase = "run";
-  }
-}
-
-/* =======================
-   UPDATE
-======================= */
-function update(dt){
-  if(state.phase === "countdown"){
-    updateCountdown(dt);
-    updateRank();
-    return;
-  }
-  if(state.phase === "run"){
-    updateRun(dt);
-    return;
-  }
-  // result中は描画のみ（NEXT待ち）
-}
-
-/* =======================
-   MAIN LOOP
-======================= */
-function loop(t){
-  const dt = Math.min((t - state.lastTime) / 1000, 0.033);
-  state.lastTime = t;
-
-  if(state.phase !== "loading"){
-    update(dt);
-  }
-  render();
-  requestAnimationFrame(loop);
-}
-
-/* =======================
-   NEXT RACE
-======================= */
-nextFixed.addEventListener("pointerdown", ()=>{
-  nextFixed.style.display = "none";
-
-  const nextIdx =
-    (state.raceIndex < CONFIG.RACES.length - 1)
-      ? state.raceIndex + 1
-      : 0;
-
-  initRace(nextIdx);
-  resetWorldForRace();
-  resetGround();
-
-  // 開始直後から障害物を出す
-  spawnWorld(0);
-
-  // 全ランナー初期位置
-  for(const r of state.runners){
-    r.x = 0;
-    r.y = world.groundY - r.h;
-    r.vy = 0;
-    r.onGround = true;
-    r.onPipe = false;
-    r.pipeRef = null;
-    r.pipeT = 0;
-  }
-
-  state.time = 0;
-  state.countdown = 3;
-  state.phase = "countdown";
-});
-
-/* =======================
-   BOOT
-======================= */
-async function boot(){
-  try{
-    await bootCore();
-
-    // 初期レース
-    initRace(0);
-    resetWorldForRace();
-    resetGround();
-    spawnWorld(0);
-
-    for(const r of state.runners){
-      r.x = 0;
-      r.y = world.groundY - r.h;
-      r.vy = 0;
-      r.onGround = true;
-    }
-
-    state.time = 0;
-    state.countdown = 3;
-    state.phase = "countdown";
-
-    state.lastTime = performance.now();
-    requestAnimationFrame(loop);
-  }catch(e){
-    if(overlay){
-      overlay.style.display = "block";
-      if(overlayTitle) overlayTitle.textContent = "Error";
-      if(overlayMsg) overlayMsg.textContent = String(e);
-    }
-    console.error(e);
-  }
-}
-
-boot();
-})();
+   
+   
  
