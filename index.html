@@ -1,53 +1,40 @@
-<!-- index.html : MOB STREET - 1P RUN (V3) -->
 <!doctype html>
 <html lang="ja">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
   <title>MOB STREET - 1P RUN</title>
-  <link rel="stylesheet" href="./style.css" />
+  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <div id="app">
-    <!-- GAME AREA -->
-    <div id="gameArea">
-      <canvas id="gameCanvas"></canvas>
+    <!-- PLAY AREA -->
+    <div id="playArea">
+      <canvas id="game" width="360" height="640"></canvas>
 
       <!-- HUD -->
       <div id="hud">
         <div class="hudRow">
-          <div id="badgeVersion" class="badge">V3</div>
-          <div class="hudRight">
-            <div id="boostHud" class="badge badgeWide">BOOST <span id="boostText">0 / 5</span></div>
-          </div>
+          <div id="verBadge" class="badge">V3.1</div>
+          <div id="boostHud" class="hudBox">BOOST <span id="boostCount">0</span> / <span id="boostMax">5</span></div>
         </div>
-
-        <div class="hudRow hudRow2">
-          <div id="centerBadge" class="badge badgeCenter">V3</div>
+        <div class="hudRow">
+          <div id="playerTag" class="hudTag">プレイヤー</div>
         </div>
-
-        <div class="hudRow hudRow3">
-          <div id="playerTag" class="playerTag">プレイヤー</div>
-        </div>
-      </div>
-
-      <!-- Loading -->
-      <div id="loading" class="overlay">
-        <div class="loadingTitle">Loading...</div>
-        <div class="loadingSub">画像を読み込んでいます</div>
+        <div id="msg" class="msg"></div>
       </div>
     </div>
 
-    <!-- CONTROL AREA (must be separated) -->
+    <!-- CONTROL AREA (separated) -->
     <div id="controlArea">
       <div class="btnRow">
         <button id="btnJump" class="btn btnJump">JUMP</button>
         <button id="btnBoost" class="btn btnBoost">BOOST</button>
-        <button id="btnJumpBoost" class="btn btnJumpBoost" disabled>JUMP BOOST<br><span class="small">(V2は無効)</span></button>
+        <button id="btnJumpBoost" class="btn btnJumpBoost" disabled>JUMP<br/>BOOST<br/><span class="sub">(V2は無効)</span></button>
       </div>
     </div>
   </div>
 
-  <script src="./game.js"></script>
+  <script src="game.js"></script>
 </body>
 </html>
