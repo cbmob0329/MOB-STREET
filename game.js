@@ -1,531 +1,552 @@
-/* =========================================================
-   MOB STREET - V2 (スマホ基準 / 最小構成 + ガードレール)
-   - 確実に起動する（永久Loading防止）
-   - 画面(プレイ)と操作エリア(DOM)分離
-   - PL1.png / PL2.png / redsk.png / st.png（任意）
-   - gardw.png（ガードレール：地面上、乗れる）
-   - BOOST：5秒に1個、最大5、開始0
-   - バージョン：左上に常時「V2」、起動直後中央にも一瞬表示
-========================================================= */
+// game.js : MOB STREET - 1P RUN (V3)
+// V3 changes:
+// - Guard rail draw keeps aspect ratio (no stretching)
+// - Guard rails are "short and frequent" (A)
+// - While riding guard rail: small speed-up
+// - Boost: single tap gives temporary burst, then returns (prevents "forever fast")
 
-"use strict";
+(() => {
+  "use strict";
 
-const BUILD = "V2";
+  // =========================
+  // VERSION
+  // =========================
+  const VERSION = "V3";
 
-/* =========================
-   DOM
-========================= */
-const canvas = document.getElementById("game");
-const ctx = canvas.getContext("2d", { alpha: true });
+  // =========================
+  // DOM
+  // =========================
+  const canvas = document.getElementById("gameCanvas");
+  const ctx = canvas.getContext("2d", { alpha: true });
 
-const elBoostGauge = document.getElementById("boostGauge");
-const elBootToast = document.getElementById("bootToast");
+  const elLoading = document.getElementById("loading");
+  const elBoostText = document.getElementById("boostText");
+  const elBadgeVersion = document.getElementById("badgeVersion");
+  const elCenterBadge = document.getElementById("centerBadge");
 
-const btnJump = document.getElementById("btnJump");
-const btnBoost = document.getElementById("btnBoost");
-const btnJumpBoost = document.getElementById("btnJumpBoost");
+  const btnJump = document.getElementById("btnJump");
+  const btnBoost = document.getElementById("btnBoost");
+  const btnJumpBoost = document.getElementById("btnJumpBoost");
 
-/* iOSでの選択・拡大をさらに抑制 */
-function preventDefault(e){ if(e && e.cancelable) e.preventDefault(); }
-["contextmenu","gesturestart","gesturechange","gestureend"].forEach(ev=>{
-  window.addEventListener(ev, preventDefault, { passive:false });
-});
+  elBadgeVersion.textContent = VERSION;
+  elCenterBadge.textContent = VERSION;
 
-/* =========================
-   Canvas Resize (黒帯防止)
-========================= */
-let DPR = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
-let VIEW_W = 360, VIEW_H = 640;
-
-function resizeCanvas(){
-  const parent = canvas.parentElement;
-  const rect = parent.getBoundingClientRect();
-  const cssW = Math.floor(rect.width);
-  const cssH = Math.floor(rect.height);
-
-  DPR = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
-
-  canvas.style.width = cssW + "px";
-  canvas.style.height = cssH + "px";
-  canvas.width = Math.floor(cssW * DPR);
-  canvas.height = Math.floor(cssH * DPR);
-
-  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-
-  VIEW_W = cssW;
-  VIEW_H = cssH;
-}
-window.addEventListener("resize", resizeCanvas, { passive:true });
-
-/* =========================
-   Assets (失敗しても進む)
-========================= */
-const ASSETS = {};
-let assetsReady = false;
-
-const ASSET_LIST = [
-  "PL1.png",
-  "PL2.png",
-  "redsk.png",
-  "st.png",     // 任意（無くても動く）
-  "gardw.png",  // ★追加
-];
-
-const LOAD = {
-  total: 0,
-  done: 0,
-  last: "",
-  ng: [],
-  forced: false
-};
-
-function makePlaceholder(w=48, h=48, label="!"){
-  const c = document.createElement("canvas");
-  c.width = w; c.height = h;
-  const g = c.getContext("2d");
-  g.fillStyle = "rgba(255,0,0,0.25)";
-  g.fillRect(0,0,w,h);
-  g.strokeStyle = "rgba(255,0,0,0.9)";
-  g.lineWidth = 2;
-  g.strokeRect(1,1,w-2,h-2);
-  g.fillStyle = "#fff";
-  g.font = "bold 16px sans-serif";
-  g.textAlign = "center";
-  g.textBaseline = "middle";
-  g.fillText(label, w/2, h/2);
-  const img = new Image();
-  img.src = c.toDataURL("image/png");
-  return img;
-}
-
-function loadAssets(){
-  LOAD.total = ASSET_LIST.length;
-  LOAD.done = 0;
-  LOAD.last = "";
-  LOAD.ng = [];
-  LOAD.forced = false;
-
-  const bust = `?v=${encodeURIComponent(BUILD)}&t=${Date.now()}`;
-
-  return new Promise((resolve)=>{
-    let resolved = false;
-
-    const hardTimeout = setTimeout(()=>{
-      if(resolved) return;
-      resolved = true;
-      LOAD.forced = true;
-      assetsReady = true;
-      resolve();
-    }, 8000);
-
-    ASSET_LIST.forEach((name)=>{
-      const img = new Image();
-      img.crossOrigin = "anonymous";
-
-      const finalize = (ok)=>{
-        LOAD.done++;
-        LOAD.last = name;
-        if(!ok) LOAD.ng.push(name);
-
-        if(LOAD.done >= LOAD.total && !resolved){
-          clearTimeout(hardTimeout);
-          resolved = true;
-          assetsReady = true;
-          resolve();
-        }
-      };
-
-      img.onload = ()=> finalize(true);
-      img.onerror = ()=>{
-        ASSETS[name] = makePlaceholder(48,48,"!");
-        finalize(false);
-      };
-
-      img.src = name + bust;
-      ASSETS[name] = img;
-    });
+  // Prevent iOS long-press selection / double-tap zoom
+  const preventDefault = (e) => { e.preventDefault(); };
+  ["gesturestart","gesturechange","gestureend"].forEach(ev => {
+    document.addEventListener(ev, preventDefault, { passive: false });
   });
-}
 
-function drawLoading(){
-  ctx.clearRect(0,0,VIEW_W,VIEW_H);
+  // =========================
+  // ASSETS
+  // =========================
+  const ASSET_LIST = [
+    "PL1.png.png",
+    "PL2.png.png",
+    "redsk.png",
+    "st.png",
+    "gardw.png"
+  ];
 
-  const g = ctx.createLinearGradient(0,0,0,VIEW_H);
-  g.addColorStop(0, "#1f5fae");
-  g.addColorStop(1, "#0a2142");
-  ctx.fillStyle = g;
-  ctx.fillRect(0,0,VIEW_W,VIEW_H);
+  const assets = {};
+  let assetsReady = false;
 
-  ctx.fillStyle = "rgba(0,0,0,0.25)";
-  ctx.fillRect(0,0,VIEW_W,VIEW_H);
-
-  const pct = LOAD.total ? Math.floor((LOAD.done/LOAD.total)*100) : 0;
-
-  ctx.fillStyle = "#fff";
-  ctx.textAlign = "center";
-  ctx.font = "800 30px sans-serif";
-  ctx.fillText("Loading...", VIEW_W/2, VIEW_H*0.45);
-
-  ctx.font = "14px sans-serif";
-  ctx.fillText("画像を読み込んでいます", VIEW_W/2, VIEW_H*0.45 + 26);
-  ctx.fillText(`${pct}% (${LOAD.done}/${LOAD.total})`, VIEW_W/2, VIEW_H*0.45 + 48);
-
-  ctx.font = "12px sans-serif";
-  ctx.fillStyle = "rgba(255,255,255,0.85)";
-  ctx.fillText(LOAD.last ? `... ${LOAD.last}` : "", VIEW_W/2, VIEW_H*0.45 + 70);
-
-  if(LOAD.ng.length){
-    ctx.fillStyle = "rgba(255,220,220,0.95)";
-    ctx.fillText(`FAILED: ${LOAD.ng.join(", ")}`, VIEW_W/2, VIEW_H*0.45 + 92);
+  function loadImage(src) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => resolve({ ok: true, img });
+      img.onerror = () => resolve({ ok: false, img: null });
+      img.src = src;
+    });
   }
-  if(LOAD.forced){
+
+  async function loadAssets() {
+    const results = await Promise.all(ASSET_LIST.map(loadImage));
+    for (let i = 0; i < ASSET_LIST.length; i++) {
+      assets[ASSET_LIST[i]] = results[i].img;
+    }
+    assetsReady = true;
+    elLoading.style.display = "none";
+  }
+
+  // =========================
+  // RESIZE / CANVAS
+  // =========================
+  const DPR_CAP = 2; // keep stable on phones
+  function resizeCanvas() {
+    const rect = canvas.getBoundingClientRect();
+    const dpr = Math.min(window.devicePixelRatio || 1, DPR_CAP);
+    canvas.width = Math.max(1, Math.floor(rect.width * dpr));
+    canvas.height = Math.max(1, Math.floor(rect.height * dpr));
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  window.addEventListener("resize", resizeCanvas);
+
+  // =========================
+  // GAME CONFIG
+  // =========================
+  const GRAVITY = 2400; // px/s^2
+  const JUMP_V0 = 820;  // px/s
+  const BASE_SPEED = 190; // px/s (feel similar to your screenshots)
+
+  const BOOST_MAX = 5;
+  const BOOST_REGEN_SEC = 5.0;
+
+  // Boost burst (temporary)
+  const BOOST_BURST_ADD = 230;   // px/s added initially
+  const BOOST_BURST_TIME = 0.55; // seconds of strong boost
+  const BOOST_DECAY_TIME = 0.70; // seconds to return to normal after burst
+
+  // Ground tuning
+  function getGroundY() {
+    // Keep the ground above the control area visually stable.
+    // Using ~ 78% of canvas height works well for tall mobile view.
+    return Math.floor(canvas.clientHeight * 0.78);
+  }
+
+  // Player rendering sizes (approx 48x48 composite)
+  const PLAYER_DRAW = { w: 44, h: 44 };
+  const BOARD_DRAW = { w: 34, h: 18 };
+
+  // =========================
+  // WORLD STATE
+  // =========================
+  const state = {
+    t: 0,
+    lastTs: 0,
+    running: true,
+
+    // player kinematics
+    player: {
+      x: 120, // screen x (fixed)
+      y: 0,   // screen y
+      vy: 0,
+      onGround: true,
+      onGuard: false,
+      spriteJump: false,
+    },
+
+    // scrolling
+    worldX: 0,     // how far progressed in px-units
+    speed: BASE_SPEED,
+
+    // boost
+    boost: {
+      stock: 0,
+      regenTimer: 0,
+      burstTimer: 0,
+      decayTimer: 0,
+      activeAdd: 0
+    },
+
+    // guard rails list (world coords)
+    guards: [],
+    nextGuardX: 0,
+
+    // visuals
+    showCenterBadgeTimer: 1.3, // show big V3 briefly
+  };
+
+  // =========================
+  // GUARD RAIL (V3)
+  // =========================
+  // A: short & frequent
+  // Keep aspect ratio: set a target height, compute width.
+  const GUARD = {
+    targetH: 18,         // lower guard (as requested previously)
+    minGap: 220,         // px
+    maxGap: 520,         // px
+    speedMul: 1.08,      // small speed-up while riding
+    sideBounce: 70,      // bounce-back strength on front collision
+  };
+
+  function getGuardDrawSize() {
+    const img = assets["gardw.png"];
+    if (img && img.naturalWidth > 0 && img.naturalHeight > 0) {
+      const h = GUARD.targetH;
+      const w = Math.round(h * (img.naturalWidth / img.naturalHeight));
+      return { w, h };
+    }
+    // fallback if image missing
+    return { w: 90, h: GUARD.targetH };
+  }
+
+  function spawnFirstGuards() {
+    const start = state.worldX + canvas.clientWidth + 160;
+    state.nextGuardX = start;
+    state.guards.length = 0;
+    // spawn 3 ahead for safety
+    for (let i = 0; i < 3; i++) spawnNextGuard();
+  }
+
+  function spawnNextGuard() {
+    const { w, h } = getGuardDrawSize();
+    const gx = state.nextGuardX;
+    const groundY = getGroundY();
+    const gy = groundY - h + 1; // sit on ground
+    state.guards.push({
+      x: gx,
+      y: gy,
+      w,
+      h,
+      // top surface for riding
+      top: gy,
+      left: gx,
+      right: gx + w
+    });
+
+    const gap = rand(GUARD.minGap, GUARD.maxGap);
+    state.nextGuardX = gx + w + gap;
+  }
+
+  function cleanupAndEnsureGuards() {
+    const camLeft = state.worldX - 200;
+    const camRight = state.worldX + canvas.clientWidth + 600;
+
+    // remove old
+    state.guards = state.guards.filter(g => g.x + g.w > camLeft);
+
+    // ensure ahead
+    while (state.nextGuardX < camRight) spawnNextGuard();
+  }
+
+  // =========================
+  // INPUT
+  // =========================
+  function doJump() {
+    const p = state.player;
+
+    // allow jump if on ground or on guard
+    if (p.onGround || p.onGuard) {
+      p.vy = -JUMP_V0;
+      p.onGround = false;
+      p.onGuard = false;
+      p.spriteJump = true;
+    }
+  }
+
+  function doBoost() {
+    const b = state.boost;
+    if (b.stock <= 0) return;
+
+    b.stock -= 1;
+    b.burstTimer = BOOST_BURST_TIME;
+    b.decayTimer = 0;
+    b.activeAdd = BOOST_BURST_ADD;
+    updateHud();
+  }
+
+  function bindButton(btn, fn) {
+    // Touch + mouse safe
+    const onDown = (e) => { e.preventDefault(); fn(); };
+    btn.addEventListener("touchstart", onDown, { passive: false });
+    btn.addEventListener("mousedown", onDown);
+  }
+
+  bindButton(btnJump, doJump);
+  bindButton(btnBoost, doBoost);
+
+  // Keyboard (PC)
+  window.addEventListener("keydown", (e) => {
+    if (e.code === "Space") { e.preventDefault(); doJump(); }
+    if (e.key === "b" || e.key === "B") { doBoost(); }
+  });
+
+  // =========================
+  // HUD
+  // =========================
+  function updateHud() {
+    elBoostText.textContent = `${state.boost.stock} / ${BOOST_MAX}`;
+  }
+
+  // =========================
+  // PHYSICS / COLLISION
+  // =========================
+  function playerAABB(p) {
+    // approximate hitbox around composite
+    const w = 30;
+    const h = 34;
+    const x = p.x - w * 0.5;
+    const y = p.y - h;
+    return { x, y, w, h, left: x, right: x + w, top: y, bottom: y + h };
+  }
+
+  function resolveCollisions(dt) {
+    const p = state.player;
+    const groundY = getGroundY();
+
+    p.onGuard = false;
+
+    // Ground
+    if (p.y >= groundY) {
+      p.y = groundY;
+      p.vy = 0;
+      p.onGround = true;
+      p.spriteJump = false;
+    } else {
+      p.onGround = false;
+    }
+
+    // Guard rails
+    const aabb = playerAABB(p);
+    const prevBottom = aabb.bottom - p.vy * dt; // approx previous bottom
+
+    const camX = state.worldX;
+    for (const g of state.guards) {
+      // convert world -> screen
+      const sx = g.x - camX;
+      const sy = g.y;
+
+      const gLeft = sx;
+      const gRight = sx + g.w;
+      const gTop = sy;
+      const gBottom = sy + g.h;
+
+      // broad phase near player
+      if (gRight < aabb.left - 60 || gLeft > aabb.right + 60) continue;
+
+      // landing on top (falling)
+      const isFalling = p.vy >= 0;
+      const overlapsX = (aabb.right > gLeft + 4) && (aabb.left < gRight - 4);
+
+      if (isFalling && overlapsX) {
+        const nowBottom = aabb.bottom;
+        const wasAbove = prevBottom <= gTop + 6;
+        const penetrated = nowBottom >= gTop;
+
+        if (wasAbove && penetrated && nowBottom <= gBottom + 22) {
+          // land
+          p.y = gTop + aabb.h; // because aabb.y = p.y - h
+          p.vy = 0;
+          p.onGuard = true;
+          p.onGround = false;
+          p.spriteJump = false;
+        }
+      }
+
+      // side collision if not on top and moving into it
+      // If player is at similar height to collide
+      const overlapsY = (aabb.bottom > gTop + 4) && (aabb.top < gBottom - 4);
+      if (!p.onGuard && overlapsY) {
+        // front hit
+        if (aabb.right > gLeft && aabb.left < gLeft && p.vy > -300) {
+          // push back slightly in world space
+          state.worldX = Math.max(0, state.worldX - GUARD.sideBounce * dt);
+        }
+      }
+    }
+  }
+
+  // =========================
+  // UPDATE
+  // =========================
+  function update(dt) {
+    const p = state.player;
+    const b = state.boost;
+
+    // show center badge briefly
+    if (state.showCenterBadgeTimer > 0) {
+      state.showCenterBadgeTimer -= dt;
+      if (state.showCenterBadgeTimer <= 0) elCenterBadge.style.display = "none";
+    }
+
+    // boost regen
+    b.regenTimer += dt;
+    while (b.regenTimer >= BOOST_REGEN_SEC) {
+      b.regenTimer -= BOOST_REGEN_SEC;
+      if (b.stock < BOOST_MAX) b.stock += 1;
+      updateHud();
+    }
+
+    // boost burst behavior (temporary, then return)
+    if (b.burstTimer > 0) {
+      b.burstTimer -= dt;
+      if (b.burstTimer <= 0) {
+        b.burstTimer = 0;
+        b.decayTimer = BOOST_DECAY_TIME;
+      }
+    } else if (b.decayTimer > 0) {
+      b.decayTimer -= dt;
+      if (b.decayTimer <= 0) {
+        b.decayTimer = 0;
+        b.activeAdd = 0;
+      } else {
+        // linear decay
+        const k = b.decayTimer / BOOST_DECAY_TIME;
+        b.activeAdd = BOOST_BURST_ADD * k;
+      }
+    }
+
+    // gravity
+    p.vy += GRAVITY * dt;
+    p.y += p.vy * dt;
+
+    // collisions set onGuard/onGround
+    resolveCollisions(dt);
+
+    // speed (guard rail small speedup)
+    const guardMul = p.onGuard ? GUARD.speedMul : 1.0;
+    const target = BASE_SPEED * guardMul + b.activeAdd;
+
+    // smooth approach to target (also prevents "forever fast")
+    const accel = 1100; // px/s^2
+    if (state.speed < target) state.speed = Math.min(target, state.speed + accel * dt);
+    else state.speed = Math.max(target, state.speed - accel * dt);
+
+    // scroll
+    state.worldX += state.speed * dt;
+
+    // guards
+    cleanupAndEnsureGuards();
+  }
+
+  // =========================
+  // RENDER
+  // =========================
+  function drawBackground() {
+    // canvas already has CSS gradient; keep it clean here.
+    // (No fill required, but we clear to avoid trails.)
+    ctx.clearRect(0, 0, canvas.clientWidth, canvas.clientHeight);
+  }
+
+  function drawGround() {
+    const groundY = getGroundY();
+    const tile = assets["st.png"];
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+
+    if (tile && tile.naturalWidth > 0) {
+      // repeat tile horizontally
+      const tileH = 90; // draw height
+      const tileW = Math.round(tileH * (tile.naturalWidth / tile.naturalHeight));
+      const offset = -(state.worldX % tileW);
+      for (let x = offset; x < w + tileW; x += tileW) {
+        ctx.drawImage(tile, x, groundY - tileH + 16, tileW, tileH);
+      }
+    } else {
+      // fallback ground
+      ctx.fillStyle = "rgba(0,0,0,0.25)";
+      ctx.fillRect(0, groundY, w, h - groundY);
+      ctx.fillStyle = "rgba(255,255,255,0.12)";
+      ctx.fillRect(0, groundY - 4, w, 4);
+    }
+  }
+
+  function drawGuards() {
+    const img = assets["gardw.png"];
+    const camX = state.worldX;
+
+    for (const g of state.guards) {
+      const sx = g.x - camX;
+      const sy = g.y;
+
+      if (sx + g.w < -80 || sx > canvas.clientWidth + 80) continue;
+
+      if (img && img.naturalWidth > 0) {
+        // V3: keep aspect ratio because g.w is derived from g.h
+        ctx.drawImage(img, sx, sy, g.w, g.h);
+      } else {
+        // fallback
+        ctx.fillStyle = "rgba(255,0,0,0.35)";
+        ctx.fillRect(sx, sy, g.w, g.h);
+        ctx.strokeStyle = "rgba(255,255,255,0.35)";
+        ctx.strokeRect(sx, sy, g.w, g.h);
+      }
+    }
+  }
+
+  function drawPlayer() {
+    const p = state.player;
+
+    const pl = p.spriteJump ? assets["PL2.png.png"] : assets["PL1.png.png"];
+    const board = assets["redsk.png"];
+
+    const drawX = p.x;
+    const drawY = p.y;
+
+    // board under
+    if (board && board.naturalWidth > 0) {
+      const bx = drawX - BOARD_DRAW.w * 0.55;
+      const by = drawY - 16;
+      ctx.drawImage(board, bx, by, BOARD_DRAW.w, BOARD_DRAW.h);
+    } else {
+      ctx.fillStyle = "rgba(255,0,0,0.25)";
+      ctx.fillRect(drawX - 18, drawY - 16, 36, 10);
+    }
+
+    // player sprite (slightly above board)
+    if (pl && pl.naturalWidth > 0) {
+      const px = drawX - PLAYER_DRAW.w * 0.52;
+      const py = drawY - PLAYER_DRAW.h - 6;
+      ctx.drawImage(pl, px, py, PLAYER_DRAW.w, PLAYER_DRAW.h);
+    } else {
+      ctx.fillStyle = "rgba(255,255,255,0.35)";
+      ctx.fillRect(drawX - 16, drawY - 40, 32, 34);
+    }
+
+    // "プレイヤー" label above head (small)
+    ctx.font = "12px system-ui, -apple-system, Hiragino Sans, Noto Sans JP, sans-serif";
     ctx.fillStyle = "rgba(255,255,255,0.95)";
-    ctx.fillText("(強制起動: 読めない画像がある可能性)", VIEW_W/2, VIEW_H*0.45 + 114);
-  }
-}
-
-/* =========================
-   Utils
-========================= */
-function clamp(v,a,b){ return Math.max(a, Math.min(b,v)); }
-function aabb(ax,ay,aw,ah, bx,by,bw,bh){
-  return ax < bx+bw && ax+aw > bx && ay < by+bh && ay+ah > by;
-}
-
-/* =========================
-   Game Config
-========================= */
-const WORLD = {
-  groundRatio: 0.78,
-  groundY: 0,
-};
-
-const PHYS = {
-  gravity: 2600,
-  jumpV: -900,
-  doubleJumpV: -820,
-  maxFall: 1800
-};
-
-const SPEED = {
-  base: 260,
-  max: 720
-};
-
-/* =========================
-   Player (48x48目安)
-========================= */
-const player = {
-  x: 86,            // もっと左に寄せるならここを小さく
-  y: 0,
-  w: 44,
-  h: 44,
-  vy: 0,
-  onGround: false,
-  canDouble: true,
-  imgRun: null,
-  imgJump: null,
-  board: null,
-};
-
-let dist = 0;
-let speed = SPEED.base;
-
-/* =========================
-   Boost System
-========================= */
-const boost = {
-  stock: 0,
-  max: 5,
-  cooldown: 5.0, // 5秒で1つ
-  t: 0,
-  activeT: 0
-};
-
-function updateBoost(dt){
-  boost.t += dt;
-  if(boost.t >= boost.cooldown){
-    const n = Math.floor(boost.t / boost.cooldown);
-    boost.t -= n * boost.cooldown;
-    boost.stock = clamp(boost.stock + n, 0, boost.max);
+    ctx.strokeStyle = "rgba(0,0,0,0.45)";
+    ctx.lineWidth = 3;
+    const label = "プレイヤー";
+    const tx = drawX - ctx.measureText(label).width * 0.5;
+    const ty = drawY - 52;
+    ctx.strokeText(label, tx, ty);
+    ctx.fillText(label, tx, ty);
   }
 
-  if(boost.activeT > 0){
-    boost.activeT -= dt;
-    speed = Math.min(SPEED.max, speed + 900*dt);
+  function render() {
+    drawBackground();
+    drawGuards();
+    drawGround();
+    drawPlayer();
   }
-  elBoostGauge.textContent = `${boost.stock} / ${boost.max}`;
-}
 
-function useBoost(){
-  if(boost.stock <= 0) return;
-  boost.stock--;
-  boost.activeT = 0.45;
-}
+  // =========================
+  // LOOP
+  // =========================
+  function tick(ts) {
+    if (!state.lastTs) state.lastTs = ts;
+    const dt = Math.min(0.033, (ts - state.lastTs) / 1000);
+    state.lastTs = ts;
 
-/* =========================
-   Input (DOM Buttons)
-========================= */
-function doJump(){
-  if(!assetsReady) return;
-  if(gameState !== "play") return;
-
-  if(player.onGround){
-    player.vy = PHYS.jumpV;
-    player.onGround = false;
-  }else if(player.canDouble){
-    player.vy = PHYS.doubleJumpV;
-    player.canDouble = false;
-  }
-}
-
-btnJump.addEventListener("pointerdown", (e)=>{ preventDefault(e); doJump(); }, { passive:false });
-btnBoost.addEventListener("pointerdown", (e)=>{ preventDefault(e); useBoost(); }, { passive:false });
-btnJumpBoost.addEventListener("pointerdown", (e)=>{ preventDefault(e); }, { passive:false });
-
-/* =========================
-   Guardrails (V2)
-   - 地面上に出現
-   - 上に乗れる
-   - 連続で繋がらない（出現間隔を確保）
-========================= */
-const GUARDS = [];
-let nextGuardX = 360;
-
-function resetGuards(){
-  GUARDS.length = 0;
-  nextGuardX = 360;
-}
-
-function spawnGuards(){
-  const ahead = dist + VIEW_W * 1.8;
-
-  while(nextGuardX < ahead){
-    // 出現頻度：控えめ（間隔広め）
-    const w = 210 + Math.floor(Math.random()*80); // 210-290
-    const h = 26; // 低め
-    const x = nextGuardX;
-    const y = WORLD.groundY - h;
-
-    GUARDS.push({x,y,w,h});
-
-    // ★繋がらない：必ず隙間を作る
-    nextGuardX += w + 420 + Math.random()*520; // gap 420〜940
-  }
-}
-
-function applyGuardsToPlayer(){
-  // プレイヤーのワールド座標
-  const pWorldX = dist + player.x;
-
-  for(const g of GUARDS){
-    // まず大雑把に重なりチェック
-    if(!aabb(pWorldX, player.y, player.w, player.h, g.x, g.y, g.w, g.h)) continue;
-
-    // 上から着地した場合のみ「乗る」
-    const feet = player.y + player.h;
-    const prevFeet = feet - player.vy * (1/60); // ざっくり
-    const crossing = prevFeet <= g.y && feet >= g.y;
-
-    const inX = (pWorldX + player.w) > g.x && pWorldX < (g.x + g.w);
-
-    if(crossing && inX && player.vy >= 0){
-      player.y = g.y - player.h;
-      player.vy = 0;
-      player.onGround = true;
-
-      // V2は「乗れる」だけ。加速は次で入れる（必要なら）
+    if (assetsReady) {
+      update(dt);
+      render();
     }
-  }
-}
 
-function drawGuards(){
-  const img = ASSETS["gardw.png"];
-  for(const g of GUARDS){
-    const sx = g.x - dist; // スクリーンX
-    if(sx < -400 || sx > VIEW_W + 400) continue;
-
-    if(img && img.width){
-      ctx.drawImage(img, sx, g.y, g.w, g.h);
-    }else{
-      ctx.fillStyle = "rgba(255,255,255,0.25)";
-      ctx.fillRect(sx, g.y, g.w, g.h);
-    }
-  }
-}
-
-/* =========================
-   Stage Render
-========================= */
-function drawBackground(){
-  const g = ctx.createLinearGradient(0,0,0,VIEW_H);
-  g.addColorStop(0, "#2b77d1");
-  g.addColorStop(1, "#0a2142");
-  ctx.fillStyle = g;
-  ctx.fillRect(0,0,VIEW_W,VIEW_H);
-}
-
-function drawStage(){
-  // 地面
-  ctx.fillStyle = "#6f5e3f";
-  ctx.fillRect(0, WORLD.groundY, VIEW_W, VIEW_H - WORLD.groundY);
-
-  // st.png があるなら“床テクスチャ”として敷く（ループ）
-  const st = ASSETS["st.png"];
-  if(st && st.width && st.height){
-    const tileH = 64;
-    const scale = tileH / st.height;
-    const tileW = Math.floor(st.width * scale);
-
-    const y = WORLD.groundY - 10;
-    const offset = -((dist * 0.9) % tileW);
-
-    for(let x = offset; x < VIEW_W + tileW; x += tileW){
-      ctx.drawImage(st, x, y, tileW, tileH);
-    }
-  }else{
-    ctx.fillStyle = "rgba(255,255,255,0.15)";
-    ctx.fillRect(0, WORLD.groundY-2, VIEW_W, 2);
-  }
-}
-
-/* =========================
-   Player Render
-========================= */
-function drawPlayer(){
-  const img = player.onGround ? player.imgRun : player.imgJump;
-
-  // スケボー
-  if(player.board && player.board.width){
-    ctx.drawImage(
-      player.board,
-      player.x - 6,
-      player.y + player.h - 12,
-      player.w + 12,
-      16
-    );
+    requestAnimationFrame(tick);
   }
 
-  // 本体
-  if(img && img.width){
-    ctx.drawImage(img, player.x, player.y, player.w, player.h);
-  }else{
-    ctx.fillStyle = "rgba(255,255,255,0.7)";
-    ctx.fillRect(player.x, player.y, player.w, player.h);
+  // =========================
+  // UTILS
+  // =========================
+  function rand(a, b) { return a + Math.random() * (b - a); }
+
+  // =========================
+  // START
+  // =========================
+  function init() {
+    resizeCanvas();
+    updateHud();
+
+    // init player position
+    state.player.y = getGroundY();
+
+    // guards
+    spawnFirstGuards();
+
+    // touch scroll prevention inside app
+    document.body.addEventListener("touchmove", (e) => e.preventDefault(), { passive: false });
+
+    loadAssets().then(() => {
+      // ensure sizes computed with loaded image
+      spawnFirstGuards();
+    });
+
+    requestAnimationFrame(tick);
   }
 
-  // ラベル
-  ctx.fillStyle = "#fff";
-  ctx.font = "12px sans-serif";
-  ctx.textAlign = "center";
-  const labelY = Math.max(20, player.y - 8);
-  ctx.fillText("プレイヤー", player.x + player.w/2, labelY);
-}
-
-/* =========================
-   Physics Update
-========================= */
-function updatePlayer(dt){
-  player.vy += PHYS.gravity * dt;
-  player.vy = Math.min(player.vy, PHYS.maxFall);
-  player.y += player.vy * dt;
-
-  // 地面
-  if(player.y + player.h >= WORLD.groundY){
-    player.y = WORLD.groundY - player.h;
-    player.vy = 0;
-    player.onGround = true;
-    player.canDouble = true;
-  }else{
-    player.onGround = false;
-  }
-}
-
-/* =========================
-   Boot Toast
-========================= */
-function showBootToast(){
-  elBootToast.textContent = BUILD;
-  elBootToast.classList.remove("show");
-  void elBootToast.offsetWidth;
-  elBootToast.classList.add("show");
-}
-
-/* =========================
-   Main Loop
-========================= */
-let gameState = "loading"; // loading | play
-let lastTS = 0;
-
-function initGame(){
-  WORLD.groundY = Math.floor(VIEW_H * WORLD.groundRatio);
-
-  player.imgRun = ASSETS["PL1.png"];
-  player.imgJump = ASSETS["PL2.png"];
-  player.board = ASSETS["redsk.png"];
-
-  player.y = WORLD.groundY - player.h;
-  player.vy = 0;
-  player.onGround = true;
-  player.canDouble = true;
-
-  boost.stock = 0;
-  boost.t = 0;
-  boost.activeT = 0;
-
-  dist = 0;
-  speed = SPEED.base;
-
-  resetGuards();
-
-  gameState = "play";
-  showBootToast();
-}
-
-function loop(ts){
-  const dt = Math.min(0.033, (ts - lastTS) / 1000 || 0);
-  lastTS = ts;
-
-  if(!assetsReady){
-    drawLoading();
-    requestAnimationFrame(loop);
-    return;
-  }
-
-  if(gameState === "loading"){
-    initGame();
-  }
-
-  // update
-  updateBoost(dt);
-
-  dist += speed * dt;
-
-  spawnGuards();
-
-  updatePlayer(dt);
-
-  // ガードレール上に乗れる判定
-  applyGuardsToPlayer();
-
-  // render
-  ctx.clearRect(0,0,VIEW_W,VIEW_H);
-  drawBackground();
-  drawStage();
-
-  // ガードレール（地面より上）
-  drawGuards();
-
-  drawPlayer();
-
-  requestAnimationFrame(loop);
-}
-
-/* =========================
-   Boot
-========================= */
-(function boot(){
-  resizeCanvas();
-  loadAssets().then(()=>{});
-  requestAnimationFrame(loop);
+  init();
 })();
