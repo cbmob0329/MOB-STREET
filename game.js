@@ -1,9 +1,9 @@
-// game.js PART 1 / 5  (FIXED4)
-// VERSION: v1.2.3-fix4-safearea-hud-clean-next-ring-mini
+// game.js PART 1 / 5  (v5)
+// VERSION: v5
 (() => {
 "use strict";
 
-const VERSION = "v1.2.3-fix4-safearea-hud-clean-next-ring-mini";
+const VERSION = "v5";
 
 /* =======================
    DOM
@@ -51,19 +51,15 @@ const CONFIG = {
   BOOST_ADD: 210,
   BOOST_TIME: 0.85,
 
-  // ★リング10個で小加速（ブースト半分くらい）
+  // リング10個で小加速（ブースト半分くらい）
   RING_NEED: 10,
   RING_BOOST_ADD: 110,
   RING_BOOST_TIME: 0.55,
 
-  // ★固定：5秒 / 最大5 / 初期0
+  // 5秒 / 最大5 / 初期0
   STOCK_MAX: 5,
   STOCK_REGEN: 5.0,
   STOCK_START: 0,
-
-  // UI安全域（下の操作UIにキャラが隠れないための余白）
-  UI_SAFE_BOTTOM: 210, // 実機でズレる場合ここだけ調整（大きいほど上がる）
-  UI_SAFE_TOP: 58,     // ノッチ/上部HUD用
 
   RACES: [
     { name:"EASY",   goal:600,  start:26, survive:16 },
@@ -110,37 +106,10 @@ async function loadAssets(){
 }
 
 /* =======================
-   FORCE HUD + NEXT (JS only)
-   - 文字被りを根本回避：ゲーム中は最小HUDのみ
-   - セーフエリア対応（ノッチ対策）
+   FIXED NEXT (JS only)
+   - Result後に必ず見えるボタン
 ======================= */
 function px(v){ return `${v}px`; }
-
-function safeTopPx(){
-  // env(safe-area-inset-top) はCSS側でしか取れないので、JS側は余白多めで固定
-  // 上部が切れる端末でも読めるよう、CONFIG.UI_SAFE_TOP を確保
-  return CONFIG.UI_SAFE_TOP;
-}
-
-let hudFixed = document.getElementById("jsHudFixed");
-if(!hudFixed){
-  hudFixed = document.createElement("div");
-  hudFixed.id = "jsHudFixed";
-  hudFixed.style.position = "fixed";
-  hudFixed.style.left = px(10);
-  hudFixed.style.top = px(safeTopPx());
-  hudFixed.style.zIndex = "99999";
-  hudFixed.style.pointerEvents = "none";
-  hudFixed.style.font = "12px system-ui";
-  hudFixed.style.color = "rgba(255,255,255,0.95)";
-  hudFixed.style.textShadow = "0 1px 2px rgba(0,0,0,0.85)";
-  hudFixed.style.whiteSpace = "pre";
-  hudFixed.style.padding = "6px 8px";
-  hudFixed.style.borderRadius = "10px";
-  hudFixed.style.background = "rgba(0,0,0,0.25)";
-  hudFixed.style.maxWidth = "calc(100vw - 20px)";
-  document.body.appendChild(hudFixed);
-}
 
 let nextFixed = document.getElementById("jsNextFixed");
 if(!nextFixed){
@@ -149,7 +118,7 @@ if(!nextFixed){
   nextFixed.textContent = "NEXT RACE";
   nextFixed.style.position = "fixed";
   nextFixed.style.left = "50%";
-  nextFixed.style.bottom = "220px"; // 操作UIの上に置く
+  nextFixed.style.bottom = "220px";
   nextFixed.style.transform = "translateX(-50%)";
   nextFixed.style.zIndex = "99999";
   nextFixed.style.pointerEvents = "auto";
@@ -162,15 +131,6 @@ if(!nextFixed){
   nextFixed.style.backdropFilter = "blur(6px)";
   nextFixed.style.display = "none";
   document.body.appendChild(nextFixed);
-}
-
-/* 既存の上HUDが切れたり被るので、JSで非表示（HTML編集は不要） */
-function hideConflictingHud(){
-  const ids = ["hudTop","topHud","hud","headerHud"];
-  for(const id of ids){
-    const el = document.getElementById(id);
-    if(el) el.style.display="none";
-  }
 }
 
 /* =======================
@@ -308,7 +268,7 @@ function initRace(idx){
 }
 
 /* =======================
-   RANK + HUD TEXT
+   RANK
 ======================= */
 function updateRank(){
   const p=state.runners[state.playerIndex];
@@ -320,18 +280,6 @@ function updateRank(){
   state.rankText=`RANK ${state.rank}/${state.runners.length}`;
 }
 
-function updateFixedHud(){
-  const p=state.runners[state.playerIndex];
-  const dist = Math.floor(p.x/CONFIG.PX_PER_M);
-  const spd  = Math.floor(speedOf(p));
-  hudFixed.textContent =
-`${VERSION}
-${CONFIG.RACES[state.raceIndex].name}  DIST ${dist}m  SPD ${spd}
-${state.rankText}
-BOOST ${state.stock}/${CONFIG.STOCK_MAX}  regen ${CONFIG.STOCK_REGEN}s
-RING ${p.rings}/${CONFIG.RING_NEED}`;
-}
-
 /* =======================
    BOOT CORE
 ======================= */
@@ -340,7 +288,6 @@ async function bootCore(){
   if(overlayTitle) overlayTitle.textContent="Loading";
   if(overlayMsg) overlayMsg.textContent="assets";
   resizeCanvas();
-  hideConflictingHud();
   await loadAssets();
 
   if(overlay) overlay.style.display="none";
@@ -348,8 +295,8 @@ async function bootCore(){
 }
 
 /* === PART2 START === */
- // game.js PART 2 / 5  (FIXED4)
-// WORLD / SPAWN / SAFE GROUND (no character hidden)
+ // game.js PART 2 / 5  (v5)
+// WORLD / SPAWN / GROUND (地面位置を“元の基準”に戻す)
 
 const world = {
   groundH: 170,
@@ -372,13 +319,8 @@ function resetGround(){
   const st = IMAGES.stage;
   world.groundH = st ? Math.max(130, Math.min(210, st.height)) : 170;
 
-  // ★下UI安全域を確保して、キャラ/ギミックが隠れない位置に地面を上げる
-  const safeBottom = CONFIG.UI_SAFE_BOTTOM;
-  const playableH = CONFIG.LOGICAL_H - safeBottom;
-  world.groundTop = playableH - world.groundH;
-
-  // 最低でも上がりすぎない保険
-  world.groundTop = Math.max(220, world.groundTop);
+  // ★元の基準：地面は画面下基準（安全域で上げない）
+  world.groundTop = CONFIG.LOGICAL_H - world.groundH;
 
   for(const r of state.runners){
     r.y = world.groundTop - r.h;
@@ -403,9 +345,10 @@ function overlapsAny(x,w,list,margin=40){
 /* ---------- rail ---------- */
 function addRail(x){
   const img = IMAGES.rail;
-  const h = Math.floor(world.groundH * 0.34); // 少し低く
+  const h = Math.floor(world.groundH * 0.34); // 低め
   const w = img ? Math.floor(img.width * (h / img.height)) : 140;
 
+  // pipeと被らない
   if(overlapsAny(x,w,world.pipes,120)){
     world.nextRailX = x + w + 280;
     return;
@@ -426,9 +369,10 @@ function addPipe(x){
   const img = Math.random()<0.5 ? IMAGES.hpr : IMAGES.hpg;
   if(!img) return;
 
-  const h = Math.floor(world.groundH * 0.34); // ガードレールと同程度
+  const h = Math.floor(world.groundH * 0.34); // ガードレール同程度
   const w = Math.floor(img.width * (h / img.height));
 
+  // railと被らない
   if(overlapsAny(x,w,world.rails,120)){
     world.nextPipeX = x + w + 380;
     return;
@@ -436,7 +380,7 @@ function addPipe(x){
 
   world.pipes.push({
     x,
-    y: world.groundTop - h, // 地面の上に配置
+    y: world.groundTop - h, // 地面の上
     w,
     h,
     img
@@ -503,8 +447,8 @@ function updateCountdown(dt){
 }
 
 /* === PART3 START === */
- // game.js PART 3 / 5  (FIXED4)
-// PHYSICS / PIPE CLIMB / RING BOOST / AI (named use rails/pipes)
+ // game.js PART 3 / 5  (v5)
+// PHYSICS / PIPE CLIMB / RING SMALL BOOST / AI
 
 /* ---------- stock ---------- */
 function regenStock(dt){
@@ -697,10 +641,11 @@ function updatePhysics(r, dt){
     }
   }
 
-  // ring pick (player only) -> auto small boost when reach 10
+  // ring pick (player only) -> 10個で小加速
   if(r.isPlayer){
     for(let i=world.rings.length-1;i>=0;i--){
       const ring = world.rings[i];
+      // 簡易当たり判定（横中心）
       if(cx > ring.x && cx < ring.x + ring.w){
         r.rings++;
         world.rings.splice(i,1);
@@ -737,7 +682,7 @@ function aiLogic(r, dt){
   const named = r.winRate > 0.30; // named 5 = >0.3
   const cx = r.x + r.w*0.5;
 
-  // 近くのレール/パイプを見て「乗る」確率を上げる
+  // 近くのレール/パイプ
   let nearRail=false, nearPipe=false;
   for(const rail of world.rails){
     if(rail.x > cx && rail.x - cx < 180){ nearRail=true; break; }
@@ -746,17 +691,17 @@ function aiLogic(r, dt){
     if(pipe.x > cx && pipe.x - cx < 210){ nearPipe=true; break; }
   }
 
-  // jump
+  // namedは積極的に使う
   const jumpChance = named
-    ? (nearRail||nearPipe ? 0.55 : 0.10)
+    ? (nearRail||nearPipe ? 0.60 : 0.10)
     : (nearRail||nearPipe ? 0.18 : 0.05);
 
   if((r.onGround||r.onRail||r.onPipe) && Math.random() < jumpChance){
     tryJump(r);
   }
 
-  // boost
-  const boostChance = named ? (0.05 + r.winRate*0.08) : 0.03;
+  // boost（namedは多め）
+  const boostChance = named ? (0.06 + r.winRate*0.08) : 0.03;
   if(Math.random() < boostChance){
     applyBoost(r, CONFIG.BOOST_ADD, CONFIG.BOOST_TIME);
   }
@@ -792,7 +737,6 @@ function updateRun(dt){
   }
 
   updateRank();
-  updateFixedHud();
 
   state.cameraX = p.x - CONFIG.LOGICAL_W * 0.18;
   state.time += dt;
@@ -805,76 +749,51 @@ function updateRun(dt){
   }
 }
 
-/* === PART4 START === */ 
- // game.js PART 4 / 5  (FIXED4)
-// RENDER (no trails) / MINIMAP / RESULT FIT / GOAL LINE
+/* === PART4 START === */
+   // game.js PART 4 / 5  (v5)
+// RENDER / PLAYER LABEL / RESULT CENTER BIG
 
 /* ---------- draw base ---------- */
 function beginDraw(){
-  const cw=canvas.width, ch=canvas.height;
-  const sx=cw/CONFIG.LOGICAL_W;
-  const sy=ch/CONFIG.LOGICAL_H;
+  const cw = canvas.width;
+  const ch = canvas.height;
+  const sx = cw / CONFIG.LOGICAL_W;
+  const sy = ch / CONFIG.LOGICAL_H;
 
-  // ★UI安全域優先で、見切れ/隠れを防ぐ（黒帯は作らない）
-  const safeH = CONFIG.LOGICAL_H - CONFIG.UI_SAFE_BOTTOM - CONFIG.UI_SAFE_TOP;
-  const s = Math.max(sx, sy); // fill
-  const ox = (cw - CONFIG.LOGICAL_W*s) * 0.5;
-  const oy = (ch - CONFIG.LOGICAL_H*s) * 0.5;
+  // 以前と同じ感覚に戻す：単純にフィット
+  const s = Math.min(sx, sy);
+  const ox = (cw - CONFIG.LOGICAL_W * s) * 0.5;
+  const oy = (ch - CONFIG.LOGICAL_H * s) * 0.5;
 
-  // 描画を上へ寄せて、下UIに隠れない
-  const lift = (CONFIG.UI_SAFE_BOTTOM * 0.18); // ほどよく上げる
-  ctx.setTransform(s,0,0,s,ox,oy - lift);
-  ctx.imageSmoothingEnabled=false;
+  ctx.setTransform(s,0,0,s,ox,oy);
+  ctx.imageSmoothingEnabled = false;
 }
 
 /* ---------- background ---------- */
 function drawSky(){
-  const g=ctx.createLinearGradient(0,0,0,CONFIG.LOGICAL_H);
+  const g = ctx.createLinearGradient(0,0,0,CONFIG.LOGICAL_H);
   g.addColorStop(0,"#2a6ccf");
   g.addColorStop(0.6,"#163d7a");
   g.addColorStop(1,"#071727");
-  ctx.fillStyle=g;
+  ctx.fillStyle = g;
   ctx.fillRect(0,0,CONFIG.LOGICAL_W,CONFIG.LOGICAL_H);
 }
 
 function drawStage(){
-  const y=world.groundTop;
+  const y = world.groundTop;
 
-  // ground shade
-  ctx.fillStyle="rgba(0,0,0,0.25)";
+  ctx.fillStyle = "rgba(0,0,0,0.25)";
   ctx.fillRect(0,y,CONFIG.LOGICAL_W,world.groundH);
 
-  const img=IMAGES.stage;
+  const img = IMAGES.stage;
   if(!img) return;
 
-  const s=world.groundH/img.height;
-  const w=Math.floor(img.width*s);
-  let x=-((state.cameraX%w+w)%w);
-  for(; x<CONFIG.LOGICAL_W+w; x+=w){
-    ctx.drawImage(img,x,y,w,world.groundH);
+  const s = world.groundH / img.height;
+  const w = Math.floor(img.width * s);
+  let x = -((state.cameraX % w + w) % w);
+  for(; x < CONFIG.LOGICAL_W + w; x += w){
+    ctx.drawImage(img, x, y, w, world.groundH);
   }
-}
-
-/* ---------- goal line ---------- */
-function drawGoalLine(){
-  const gx = world.goalX - state.cameraX;
-  if(gx < -50 || gx > CONFIG.LOGICAL_W + 50) return;
-
-  const top = world.groundTop - 120;
-  const h = 220;
-
-  ctx.fillStyle="rgba(255,255,255,0.9)";
-  ctx.fillRect(gx-2, top, 4, h);
-
-  // checker small blocks
-  for(let i=0;i<10;i++){
-    ctx.fillStyle = (i%2===0) ? "rgba(0,0,0,0.8)" : "rgba(255,255,255,0.8)";
-    ctx.fillRect(gx+6, top + i*20, 14, 14);
-  }
-
-  ctx.fillStyle="rgba(255,255,255,0.95)";
-  ctx.font="12px system-ui";
-  ctx.fillText("GOAL", gx-18, top-8);
 }
 
 /* ---------- objects ---------- */
@@ -915,81 +834,91 @@ function drawObjects(){
 function drawRunner(r){
   let sx;
   if(r.isPlayer){
-    sx=Math.floor(CONFIG.LOGICAL_W*0.18);
+    sx = Math.floor(CONFIG.LOGICAL_W * 0.18);
   }else{
-    const p=state.runners[state.playerIndex];
-    sx=Math.floor(CONFIG.LOGICAL_W*0.18 + (r.x-p.x));
+    const p = state.runners[state.playerIndex];
+    sx = Math.floor(CONFIG.LOGICAL_W * 0.18 + (r.x - p.x));
   }
-  if(sx<-120||sx>CONFIG.LOGICAL_W+120) return;
+  if(sx < -120 || sx > CONFIG.LOGICAL_W + 120) return;
 
   // shadow
   ctx.fillStyle="rgba(0,0,0,0.25)";
   ctx.beginPath();
-  ctx.ellipse(sx+r.w/2,world.groundTop+6,r.w*0.35,6,0,0,Math.PI*2);
+  ctx.ellipse(
+    sx + r.w/2,
+    world.groundTop + 6,
+    r.w * 0.35,
+    6,
+    0,0,Math.PI*2
+  );
   ctx.fill();
 
   // board
-  const board=IMAGES.board;
-  board && ctx.drawImage(board, sx-r.w*0.05, r.y+r.h*0.65, r.w*1.1, r.h*0.45);
+  const board = IMAGES.board;
+  board && ctx.drawImage(
+    board,
+    sx - r.w*0.05,
+    r.y + r.h*0.65,
+    r.w*1.1,
+    r.h*0.45
+  );
 
   // body
-  const body=(r.onGround||r.onRail||r.onPipe)?IMAGES.pl1:IMAGES.pl2;
+  const body = (r.onGround||r.onRail||r.onPipe) ? IMAGES.pl1 : IMAGES.pl2;
   body && ctx.drawImage(body, sx, r.y, r.w, r.h);
-}
 
-/* ---------- minimap ---------- */
-function drawMinimap(){
-  const mapW=220, mapH=6;
-  const x=(CONFIG.LOGICAL_W-mapW)/2;
-  const y=10;
-
-  ctx.fillStyle="rgba(0,0,0,0.5)";
-  ctx.fillRect(x,y,mapW,mapH);
-
-  for(const r of state.runners){
-    const t=clamp(r.x/world.goalX,0,1);
-    const px=x+mapW*t;
-    ctx.fillStyle=r.isPlayer?"#00ffcc":"#ffffff";
-    ctx.fillRect(px-1,y-2,2,mapH+4);
+  // ★プレイヤー識別ラベル
+  if(r.isPlayer){
+    ctx.font = "10px system-ui";
+    ctx.textAlign = "center";
+    ctx.fillStyle = "rgba(255,255,255,0.95)";
+    ctx.strokeStyle = "rgba(0,0,0,0.8)";
+    ctx.lineWidth = 3;
+    ctx.strokeText("プレイヤー", sx + r.w/2, r.y - 6);
+    ctx.fillText("プレイヤー", sx + r.w/2, r.y - 6);
+    ctx.textAlign = "left";
   }
 }
 
 /* ---------- result ---------- */
 function drawResult(){
-  ctx.fillStyle="rgba(0,0,0,0.78)";
+  ctx.fillStyle="rgba(0,0,0,0.85)";
   ctx.fillRect(0,0,CONFIG.LOGICAL_W,CONFIG.LOGICAL_H);
 
   ctx.fillStyle="#fff";
-  ctx.font="18px system-ui";
-  ctx.fillText(`RESULT - ${CONFIG.RACES[state.raceIndex].name}`, 12, 28);
+  ctx.textAlign="center";
+  ctx.font="bold 26px system-ui";
+  ctx.fillText(
+    `RESULT - ${CONFIG.RACES[state.raceIndex].name}`,
+    CONFIG.LOGICAL_W/2,
+    56
+  );
 
   const list=[...state.runners].sort((a,b)=>a.finishTime-b.finishTime);
 
-  // 2 columns fit
-  const colW=(CONFIG.LOGICAL_W-24)/2;
-  const startY=48;
-  const rowH=14;
-  ctx.font="12px system-ui";
-
+  ctx.font="16px system-ui";
+  let y=110;
   for(let i=0;i<list.length;i++){
-    const col=i<18?0:1;
-    const row=i<18?i:i-18;
-    const x=12+colW*col;
-    const y=startY+rowH*row;
-
+    if(i>=12) break;
     const r=list[i];
-    const t=isFinite(r.finishTime)?r.finishTime.toFixed(2):"--";
     ctx.fillStyle=r.isPlayer?"#00ffcc":"#ffffff";
-    ctx.fillText(`${i+1}. ${r.name} ${t}`, x, y);
+    const t=isFinite(r.finishTime)?`${r.finishTime.toFixed(2)}s`:"--";
+    ctx.fillText(
+      `${i+1}. ${r.name}   ${t}`,
+      CONFIG.LOGICAL_W/2,
+      y
+    );
+    y+=28;
   }
+
+  ctx.textAlign="left";
 }
 
 /* ---------- render ---------- */
 function render(){
-  // ★残像対策：完全クリア（iOS Safari含む）
+  // 残像完全防止
   ctx.setTransform(1,0,0,1,0,0);
-  ctx.globalCompositeOperation = "source-over";
-  ctx.imageSmoothingEnabled = false;
+  ctx.globalCompositeOperation="source-over";
   ctx.fillStyle="#000";
   ctx.fillRect(0,0,canvas.width,canvas.height);
 
@@ -997,15 +926,11 @@ function render(){
   drawSky();
   drawStage();
   drawObjects();
-  drawGoalLine();
 
-  // runners
   for(const r of state.runners){
     if(!r.isPlayer && r.winRate>0.3) drawRunner(r);
   }
   drawRunner(state.runners[state.playerIndex]);
-
-  drawMinimap();
 
   if(state.phase==="countdown"){
     ctx.fillStyle="rgba(0,0,0,0.6)";
@@ -1013,7 +938,11 @@ function render(){
     ctx.fillStyle="#fff";
     ctx.font="bold 64px system-ui";
     ctx.textAlign="center";
-    ctx.fillText(Math.ceil(state.countdown),CONFIG.LOGICAL_W/2,CONFIG.LOGICAL_H/2);
+    ctx.fillText(
+      Math.ceil(state.countdown),
+      CONFIG.LOGICAL_W/2,
+      CONFIG.LOGICAL_H/2
+    );
     ctx.textAlign="left";
   }
 
@@ -1023,23 +952,22 @@ function render(){
 }
 
 /* === PART5 START === */
- // game.js PART 5 / 5  (FIXED4)
-// LOOP / NEXT RACE BUTTON / BOOT
+   // game.js PART 5 / 5  (v5)
+// LOOP / NEXT RACE / BOOT
 
 function update(dt){
   if(state.phase === "countdown"){
     updateCountdown(dt);
     updateRank();
-    updateFixedHud();
     return;
   }
   if(state.phase === "run"){
     updateRun(dt);
     return;
   }
-  // result: wait nextFixed
+  // result
   if(state.phase === "result"){
-    updateFixedHud();
+    // ここでは描画のみ（入力はNEXTのみ）
   }
 }
 
@@ -1054,7 +982,7 @@ function loop(t){
   requestAnimationFrame(loop);
 }
 
-/* ---------- NEXT (JS fixed) ---------- */
+/* ---------- NEXT (固定ボタン) ---------- */
 nextFixed.addEventListener("pointerdown", ()=>{
   nextFixed.style.display = "none";
 
@@ -1066,7 +994,6 @@ nextFixed.addEventListener("pointerdown", ()=>{
   resetGround();
   setGoal();
   updateRank();
-  updateFixedHud();
   state.phase = "countdown";
 });
 
@@ -1078,7 +1005,6 @@ async function boot(){
     resetGround();
     setGoal();
     updateRank();
-    updateFixedHud();
     state.phase = "countdown";
     state.lastTime = performance.now();
     requestAnimationFrame(loop);
@@ -1094,3 +1020,5 @@ async function boot(){
 
 boot();
 })();
+   
+ 
