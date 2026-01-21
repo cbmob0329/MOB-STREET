@@ -1,29 +1,52 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ja">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
   <title>MOB STREET</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <div id="game-root">
-    <!-- HUD -->
-    <div id="hud">
-      <div id="version">V2.1</div>
-      <div id="boost">BOOST <span id="boostVal">0</span>/5</div>
+  <!-- 上部情報バー（Canvasとは別） -->
+  <header class="topbar" id="topbar">
+    <div class="topbar__left">
+      <div class="topbar__title">MOB STREET - 1P RUN</div>
+      <div class="topbar__sub" id="topSub">Loading...</div>
+    </div>
+    <div class="topbar__right" id="topRight">RANK --/--</div>
+  </header>
+
+  <!-- プレイ画面 -->
+  <main class="play">
+    <canvas id="gameCanvas"></canvas>
+
+    <!-- Loading/エラー表示 -->
+    <div id="overlay" class="overlay" style="display:none;">
+      <div class="overlay__box">
+        <div id="overlayTitle" class="overlay__title">Loading</div>
+        <div id="overlayMsg" class="overlay__msg">assets</div>
+      </div>
     </div>
 
-    <!-- Canvas -->
-    <canvas id="game"></canvas>
+    <!-- 左上TOP8表示用（CanvasではなくDOM固定） -->
+    <div id="top8" class="top8"></div>
+  </main>
 
-    <!-- Controls -->
-    <div id="controls">
-      <button id="btnJump">JUMP</button>
-      <button id="btnBoost">BOOST</button>
-      <button id="btnJumpBoost" disabled>JUMP BOOST</button>
+  <!-- 操作エリア -->
+  <footer class="controls controls--fixed">
+    <div class="controls__row">
+      <button id="btnJump" class="btn btn--jump">JUMP</button>
+      <button id="btnBoost" class="btn btn--boost">BOOST</button>
+      <button id="btnJumpBoost" class="btn btn--jb" disabled>ITEM</button>
     </div>
-  </div>
+
+    <div class="controls__row controls__row--mini">
+      <div class="gauge">
+        <div class="gauge__label">BOOST STOCK</div>
+        <div class="gauge__bar" id="stockBar"></div>
+      </div>
+    </div>
+  </footer>
 
   <script src="game.js"></script>
 </body>
