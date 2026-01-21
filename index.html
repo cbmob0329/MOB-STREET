@@ -1,42 +1,27 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="ja">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>MOB STREET - 1P RUN</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>MOB STREET</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <div id="app">
-    <div id="playWrap">
-      <canvas id="game" width="720" height="900"></canvas>
-
-      <!-- HUD -->
-      <div id="hudTop">
-        <div class="pill" id="verPill">V2</div>
-        <div class="pill" id="boostPill">BOOST <span id="boostTxt">0</span> / <span id="boostMaxTxt">5</span></div>
-      </div>
-
-      <div id="playerTag" class="tag">プレイヤー</div>
-
-      <!-- Center badge (for quick visual confirm) -->
-      <div id="centerBadge" class="pill big">V2</div>
-
-      <!-- Loading -->
-      <div id="loading" class="overlay">
-        <div class="loadingBox">
-          <div class="loadingTitle">Loading...</div>
-          <div class="loadingSub">画像を読み込んでいます</div>
-        </div>
-      </div>
+  <div id="game-root">
+    <!-- HUD -->
+    <div id="hud">
+      <div id="version">V2.1</div>
+      <div id="boost">BOOST <span id="boostVal">0</span>/5</div>
     </div>
 
+    <!-- Canvas -->
+    <canvas id="game"></canvas>
+
+    <!-- Controls -->
     <div id="controls">
-      <button id="btnJump" class="btn blue">JUMP</button>
-      <button id="btnBoost" class="btn gray">BOOST</button>
-      <button id="btnJumpBoost" class="btn dark" disabled>
-        JUMP<br/>BOOST<br/><small>(V2は無効)</small>
-      </button>
+      <button id="btnJump">JUMP</button>
+      <button id="btnBoost">BOOST</button>
+      <button id="btnJumpBoost" disabled>JUMP BOOST</button>
     </div>
   </div>
 
