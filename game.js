@@ -106,8 +106,8 @@ const rand  = (a,b)=>a + Math.random()*(b-a);
    ASSETS
 ======================= */
 const ASSETS = {
-  pl1:"PL1.png.png",
-  pl2:"PL2.png.png",
+  pl1:"PL1.png",
+  pl2:"PL2.png",
   board:"redsk.png",
   stage:"st.png",
   rail:"gardw.png",
