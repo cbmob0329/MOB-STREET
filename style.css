@@ -1,186 +1,164 @@
-/* style.css : MOB STREET - 1P RUN (V3) */
+:root{
+  --bg1:#0c3f78;
+  --bg2:#0a2f59;
+  --panel:#0b2b4f;
+  --panel2:#0a2442;
+  --text:#eaf2ff;
+  --muted:#b9cbe6;
+  --shadow: rgba(0,0,0,.35);
+}
 
-/* iOS Safari selection / zoom / long-press prevention */
-html, body {
-  margin: 0;
-  padding: 0;
-  height: 100%;
-  background: #0b1730;
-  overflow: hidden;
+*{ box-sizing:border-box; }
+html, body{
+  margin:0;
+  padding:0;
+  height:100%;
+  background: #061c33;
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
+}
 
-  -webkit-user-select: none;
-  user-select: none;
-  -webkit-touch-callout: none;
-  -webkit-tap-highlight-color: rgba(0,0,0,0);
-
+/* iOS Safari selection / callout / zoom prevention */
+body{
+  -webkit-user-select:none;
+  user-select:none;
+  -webkit-touch-callout:none;
+  touch-action: manipulation;
+}
+button, canvas{
+  -webkit-user-select:none;
+  user-select:none;
+  -webkit-touch-callout:none;
   touch-action: manipulation;
 }
 
-#app {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
+#app{
+  height:100vh;
+  display:flex;
+  flex-direction:column;
 }
 
-/* Separate game & control areas */
-#gameArea {
-  position: relative;
+/* PLAY + CONTROL separated */
+#playArea{
   flex: 1 1 auto;
-  background: linear-gradient(#2c77b8, #0b2e5a);
-  overflow: hidden;
+  position:relative;
+  overflow:hidden;
+  background: linear-gradient(180deg, var(--bg1), var(--bg2));
 }
 
-#gameCanvas {
-  position: absolute;
+#game{
+  display:block;
+  width:100%;
+  height:100%;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+
+#hud{
+  position:absolute;
   inset: 0;
-  width: 100%;
-  height: 100%;
-  display: block;
-  background: transparent;
+  pointer-events:none;
+  padding: max(10px, env(safe-area-inset-top)) 10px 10px 10px;
 }
 
-/* HUD overlay (avoid overlapping controls) */
-#hud {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
+.hudRow{
+  display:flex;
+  gap:10px;
+  align-items:flex-start;
+  justify-content:space-between;
 }
 
-.hudRow {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  padding: 10px 10px 0 10px;
-}
-
-.hudRow2 {
-  justify-content: center;
-  padding-top: 42px;
-}
-
-.hudRow3 {
-  justify-content: flex-start;
-  padding-top: 6px;
-}
-
-.hudRight {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-
-.badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 42px;
-  height: 34px;
-  padding: 0 12px;
-  color: #eaf2ff;
-  font-weight: 800;
-  letter-spacing: 0.5px;
-  border-radius: 10px;
-  background: rgba(0,0,0,0.35);
-  border: 2px solid rgba(255,255,255,0.18);
-  box-shadow: 0 8px 24px rgba(0,0,0,0.25);
-  font-family: system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif;
-}
-
-.badgeWide {
-  min-width: 130px;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.badgeCenter {
-  min-width: 70px;
-  height: 44px;
-  font-size: 20px;
-  background: rgba(0,0,0,0.22);
-}
-
-.playerTag {
-  margin-left: 10px;
-  margin-top: 6px;
-  padding: 6px 10px;
-  border-radius: 10px;
-  background: rgba(0,0,0,0.25);
-  color: rgba(255,255,255,0.9);
-  font-weight: 700;
-  font-size: 13px;
-  border: 1px solid rgba(255,255,255,0.15);
-  font-family: system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif;
-}
-
-/* Loading overlay */
-.overlay {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  background: rgba(0,0,0,0.10);
-  color: rgba(255,255,255,0.95);
-  font-family: system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif;
-}
-
-.loadingTitle {
-  font-size: 34px;
-  font-weight: 900;
-  letter-spacing: 0.8px;
-  margin-bottom: 10px;
-  text-shadow: 0 12px 30px rgba(0,0,0,0.35);
-}
-
-.loadingSub {
-  display: inline-block;
-  padding: 8px 14px;
+.badge{
+  background: rgba(8, 32, 58, .85);
+  border: 2px solid rgba(255,255,255,.2);
   border-radius: 12px;
-  background: rgba(0,0,0,0.25);
-  border: 1px solid rgba(255,255,255,0.14);
+  padding: 8px 12px;
+  font-weight: 800;
+  letter-spacing:.5px;
+  box-shadow: 0 8px 18px var(--shadow);
 }
 
-/* Controls */
-#controlArea {
+.hudBox{
+  background: rgba(8, 32, 58, .85);
+  border: 2px solid rgba(255,255,255,.2);
+  border-radius: 14px;
+  padding: 10px 14px;
+  font-weight: 700;
+  box-shadow: 0 8px 18px var(--shadow);
+  min-width: 140px;
+  text-align:right;
+}
+
+.hudTag{
+  margin-top: 10px;
+  background: rgba(8, 32, 58, .65);
+  border: 2px solid rgba(255,255,255,.18);
+  border-radius: 12px;
+  padding: 8px 12px;
+  font-weight: 700;
+  width: fit-content;
+  box-shadow: 0 8px 18px var(--shadow);
+}
+
+.msg{
+  position:absolute;
+  left: 12px;
+  right: 12px;
+  top: 110px;
+  background: rgba(0,0,0,.25);
+  border: 1px solid rgba(255,255,255,.12);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--muted);
+  display:none;
+}
+
+#controlArea{
   flex: 0 0 auto;
-  background: rgba(0,0,0,0.20);
-  border-top: 1px solid rgba(255,255,255,0.10);
-  padding: 12px 10px 14px 10px;
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
-
-  /* keep selection off */
-  -webkit-user-select: none;
-  user-select: none;
-  touch-action: manipulation;
+  padding: 12px 12px calc(12px + env(safe-area-inset-bottom)) 12px;
+  background: linear-gradient(180deg, rgba(0,0,0,.0), rgba(0,0,0,.35));
+  border-top: 1px solid rgba(255,255,255,.08);
 }
 
-.btnRow {
-  display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
-  gap: 10px;
+.btnRow{
+  display:flex;
+  gap:12px;
 }
 
-.btn {
-  height: 78px;
-  border-radius: 16px;
+.btn{
+  flex:1 1 0;
+  height: 86px;
   border: none;
-  font-size: 20px;
+  border-radius: 16px;
   font-weight: 900;
+  font-size: 22px;
   color: #fff;
-  box-shadow: 0 10px 25px rgba(0,0,0,0.25);
+  box-shadow: 0 12px 24px var(--shadow);
+  transform: translateZ(0);
 }
 
-.btn:active {
+.btn:active{
   transform: translateY(1px);
-  filter: brightness(0.95);
 }
 
-.btnJump { background: #1f7fff; }
-.btnBoost { background: #2f5b86; }
-.btnJumpBoost { background: #1b1f2a; opacity: 0.55; }
+.btnJump{
+  background: #1e74ff;
+}
+.btnBoost{
+  background: #2a3e5d;
+}
+.btnJumpBoost{
+  background: #1a1f28;
+  opacity: .65;
+}
+.btnJumpBoost:disabled{
+  filter: grayscale(60%);
+}
 
-.small {
+.sub{
   font-size: 12px;
   font-weight: 700;
-  opacity: 0.9;
+  opacity:.7;
 }
