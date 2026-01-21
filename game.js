@@ -1,19 +1,20 @@
-// game.js PART 1 / 5  (v6 FULL FIXED PART1)
-// VERSION: v6
-// Fixes: black side bars (cover scale in PART4), countdown dark overlay (lighter in PART4),
-// race-to-race spawn reset (PART2 + initRace hook), pipe bigger (PART2), AI boost cooldown (PART3),
-// player label (PART4)
+// game.js v6.1  PART 1 / 5
+// VERSION: v6.1
+// Fix focus (this release):
+// - canvasが操作UIに食い込んでキャラが埋まる問題（JSのみでプレイ領域に自動フィット）
+// - 構文/初期化の安定化（レース切替・名前付きゴースト等）
+// NOTE: PART2〜5で、ワールド生成/物理/描画/進行を仕上げます。
 
 (() => {
 "use strict";
 
-const VERSION = "v6";
+const VERSION = "v6.1";
 
 /* =======================
    DOM
 ======================= */
 const canvas = document.getElementById("gameCanvas");
-const ctx = canvas.getContext("2d",{alpha:false});
+const ctx = canvas.getContext("2d", { alpha: false });
 
 const overlay = document.getElementById("overlay");
 const overlayTitle = document.getElementById("overlayTitle");
@@ -21,18 +22,19 @@ const overlayMsg = document.getElementById("overlayMsg");
 
 const btnJump = document.getElementById("btnJump");
 const btnBoost = document.getElementById("btnBoost");
-const btnJumpBoost = document.getElementById("btnJumpBoost"); // いったん無効
-const btnNext = document.getElementById("btnNext"); // あっても使わない（固定NEXTを使う）
+const btnJumpBoost = document.getElementById("btnJumpBoost"); // 将来アイテム枠（今は無効）
 
+// HUDがあれば拾う（無くても動く）
 const hudSpeed = document.getElementById("hudSpeed");
 const hudDist  = document.getElementById("hudDist");
 
 /* =======================
    MOBILE LOCK (no select/zoom)
 ======================= */
-["dblclick","contextmenu","gesturestart","gesturechange","gestureend"]
-.forEach(ev=>document.addEventListener(ev,e=>e.preventDefault(),{passive:false}));
-window.addEventListener("touchmove",e=>e.preventDefault(),{passive:false});
+["dblclick","contextmenu","gesturestart","gesturechange","gestureend"].forEach(ev=>{
+  document.addEventListener(ev, e => e.preventDefault(), { passive:false });
+});
+window.addEventListener("touchmove", e => e.preventDefault(), { passive:false });
 
 /* =======================
    CONFIG
@@ -55,31 +57,28 @@ const CONFIG = {
   BOOST_ADD: 210,
   BOOST_TIME: 0.85,
 
-  // リング10個で小加速（ブースト半分くらい）
+  // ring 10 => small accel
   RING_NEED: 10,
   RING_BOOST_ADD: 110,
   RING_BOOST_TIME: 0.55,
 
-  // プレイヤー：5秒 / 最大5 / 初期0
+  // player stock: 5s regen, max5, start0
   STOCK_MAX: 5,
   STOCK_REGEN: 5.0,
   STOCK_START: 0,
 
-  // AI：ブースト最短間隔（体感の不公平感を抑える）
+  // AI boost cooldown (per ghost)
   AI_BOOST_COOLDOWN: 5.0,
 
   RACES: [
-    { name:"EASY",   goal:600,  start:26, survive:16 },
-    { name:"NORMAL", goal:1000, start:16, survive:6  },
-    { name:"HARD",   goal:1200, start:8,  survive:1  }
+    { name:"EASY",   goal: 600,  start:26, survive:16 },
+    { name:"NORMAL", goal: 1000, start:16, survive: 6 },
+    { name:"HARD",   goal: 1200, start: 8, survive: 1 }
   ]
 };
 
-/* =======================
-   UTIL
-======================= */
-const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
-const rand=(a,b)=>a+Math.random()*(b-a);
+const clamp = (v,a,b)=>Math.max(a,Math.min(b,v));
+const rand  = (a,b)=>a + Math.random()*(b-a);
 
 /* =======================
    ASSETS
@@ -94,53 +93,117 @@ const ASSETS = {
   hpg:"hpg.png",
   ring:"ringtap.png"
 };
-const IMAGES={};
+const IMAGES = {};
 
 function loadImage(src){
   return new Promise((res,rej)=>{
-    const i=new Image();
-    i.onload=()=>res(i);
-    i.onerror=()=>rej(src);
-    i.src=src;
+    const img = new Image();
+    img.onload = ()=>res(img);
+    img.onerror = ()=>rej(src);
+    img.src = src;
   });
 }
 async function loadAssets(){
   for(const k in ASSETS){
-    if(overlayTitle) overlayTitle.textContent="Loading";
-    if(overlayMsg) overlayMsg.textContent=ASSETS[k];
-    IMAGES[k]=await loadImage(ASSETS[k]);
+    if(overlayTitle) overlayTitle.textContent = "Loading";
+    if(overlayMsg) overlayMsg.textContent = ASSETS[k];
+    IMAGES[k] = await loadImage(ASSETS[k]);
   }
 }
 
 /* =======================
-   FIXED NEXT (JS only)
+   PLAY AREA FIT (JS only)
+   canvas下端を操作UI上端に合わせる（埋まり問題の根本対策）
+======================= */
+function fitCanvasToPlayArea(){
+  let top = null;
+
+  const rects = [];
+  if(btnJump) rects.push(btnJump.getBoundingClientRect());
+  if(btnBoost) rects.push(btnBoost.getBoundingClientRect());
+  if(btnJumpBoost) rects.push(btnJumpBoost.getBoundingClientRect());
+
+  for(const r of rects){
+    if(r && r.top > 0){
+      top = (top === null) ? r.top : Math.min(top, r.top);
+    }
+  }
+
+  // フォールバック：下35%は操作域
+  if(top === null){
+    top = Math.floor(window.innerHeight * 0.65);
+  }
+
+  // iOSのアドレスバー変動対策で少し余白
+  const playH = Math.max(220, Math.floor(top - 6));
+
+  canvas.style.width  = "100%";
+  canvas.style.height = playH + "px";
+  canvas.style.display = "block";
+}
+
+/* =======================
+   CANVAS DPI
+======================= */
+function resizeCanvas(){
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const r = canvas.getBoundingClientRect();
+  canvas.width  = Math.max(1, Math.floor(r.width  * dpr));
+  canvas.height = Math.max(1, Math.floor(r.height * dpr));
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+}
+
+/* =======================
+   INPUT
+======================= */
+const input = { jump:false, boost:false };
+
+btnJump?.addEventListener("pointerdown", ()=>{ input.jump = true; });
+btnBoost?.addEventListener("pointerdown", ()=>{ input.boost = true; });
+
+window.addEventListener("keydown", e=>{
+  if(e.key===" ") input.jump=true;
+  if(e.key==="b") input.boost=true;
+});
+
+// ジャンプブーストは一旦無効（将来アイテム）
+if(btnJumpBoost){
+  btnJumpBoost.style.opacity="0.45";
+  btnJumpBoost.style.filter="grayscale(0.6)";
+  btnJumpBoost.addEventListener("pointerdown", (e)=>{
+    e.preventDefault(); e.stopPropagation();
+  });
+}
+
+/* =======================
+   FIXED NEXT BUTTON (JS only)
 ======================= */
 let nextFixed = document.getElementById("jsNextFixed");
 if(!nextFixed){
   nextFixed = document.createElement("button");
   nextFixed.id = "jsNextFixed";
   nextFixed.textContent = "NEXT RACE";
-  nextFixed.style.position = "fixed";
-  nextFixed.style.left = "50%";
-  nextFixed.style.bottom = "220px";
-  nextFixed.style.transform = "translateX(-50%)";
-  nextFixed.style.zIndex = "99999";
-  nextFixed.style.pointerEvents = "auto";
-  nextFixed.style.padding = "12px 18px";
-  nextFixed.style.borderRadius = "14px";
-  nextFixed.style.border = "none";
-  nextFixed.style.font = "bold 14px system-ui";
-  nextFixed.style.color = "#fff";
-  nextFixed.style.background = "rgba(0,0,0,0.55)";
-  nextFixed.style.backdropFilter = "blur(6px)";
-  nextFixed.style.display = "none";
+  nextFixed.style.position="fixed";
+  nextFixed.style.left="50%";
+  nextFixed.style.bottom="220px";
+  nextFixed.style.transform="translateX(-50%)";
+  nextFixed.style.zIndex="99999";
+  nextFixed.style.pointerEvents="auto";
+  nextFixed.style.padding="12px 18px";
+  nextFixed.style.borderRadius="14px";
+  nextFixed.style.border="none";
+  nextFixed.style.font="bold 14px system-ui";
+  nextFixed.style.color="#fff";
+  nextFixed.style.background="rgba(0,0,0,0.55)";
+  nextFixed.style.backdropFilter="blur(6px)";
+  nextFixed.style.display="none";
   document.body.appendChild(nextFixed);
 }
 
 /* =======================
-   STATE
+   STATE / RUNNER
 ======================= */
-const state={
+const state = {
   phase:"loading", // loading / countdown / run / result
   raceIndex:0,
   time:0,
@@ -161,24 +224,22 @@ const state={
   rankText:""
 };
 
-/* =======================
-   RUNNER
-======================= */
 function createRunner(name,isPlayer,winRate){
-  return{
-    name,isPlayer,winRate,
-    x:0,y:0,vy:0,
-    w:CONFIG.PLAYER_SIZE,h:CONFIG.PLAYER_SIZE,
+  return {
+    name, isPlayer, winRate,
+
+    x:0, y:0, vy:0,
+    w:CONFIG.PLAYER_SIZE, h:CONFIG.PLAYER_SIZE,
 
     onGround:true,
     onRail:false,
     onPipe:false,
 
-    wasOnPipe:false,
     pipeRef:null,
     pipeT:0,
 
     jumps:0,
+
     boostTimer:0,
     boostPower:0,
 
@@ -188,91 +249,60 @@ function createRunner(name,isPlayer,winRate){
     finished:false,
     finishTime:Infinity,
 
-    aiCd:rand(0.15,0.45),
-    aiBoostCd:rand(0.0, CONFIG.AI_BOOST_COOLDOWN)
+    aiCd: rand(0.20,0.55),
+    aiBoostCd: rand(0.0, CONFIG.AI_BOOST_COOLDOWN)
   };
 }
 
 /* =======================
-   INPUT
+   RACE / GHOSTS
 ======================= */
-const input={jump:false,boost:false};
-btnJump?.addEventListener("pointerdown",()=>input.jump=true);
-btnBoost?.addEventListener("pointerdown",()=>input.boost=true);
-
-window.addEventListener("keydown",e=>{
-  if(e.key===" ") input.jump=true;
-  if(e.key==="b") input.boost=true;
-});
-
-/* ジャンプブーストは一旦無効（将来アイテム枠） */
-if(btnJumpBoost){
-  btnJumpBoost.style.opacity = "0.45";
-  btnJumpBoost.style.filter = "grayscale(0.6)";
-  btnJumpBoost.addEventListener("pointerdown",(e)=>{
-    e.preventDefault();
-    e.stopPropagation();
-  });
-}
-
-/* =======================
-   CANVAS RESIZE
-======================= */
-function resizeCanvas(){
-  const dpr=Math.min(2,window.devicePixelRatio||1);
-  const r=canvas.getBoundingClientRect();
-  canvas.width=r.width*dpr;
-  canvas.height=r.height*dpr;
-  ctx.setTransform(dpr,0,0,dpr,0,0);
-}
-window.addEventListener("resize",resizeCanvas);
-
-/* =======================
-   RACE INIT
-======================= */
-const NAMED_GHOSTS=[
+const NAMED_GHOSTS = [
   {name:"フレンチ",wr:0.60},
   {name:"レッド",wr:0.70},
   {name:"レッドブルー",wr:0.90},
   {name:"ブラック",wr:0.85},
   {name:"ホワイト",wr:0.75}
 ];
-const LETTERS="ABCDEFGHIJKLMNOPQRST".split("");
+const LETTERS = "ABCDEFGHIJKLMNOPQRST".split("");
 
 function initRace(idx){
-  state.raceIndex=idx;
-  state.runners.length=0;
-  state.finishedCount=0;
+  state.raceIndex = idx;
+  state.runners.length = 0;
+  state.finishedCount = 0;
 
-  const player=createRunner("YOU",true,1.0);
+  const player = createRunner("YOU", true, 1.0);
   state.runners.push(player);
-  state.playerIndex=0;
+  state.playerIndex = 0;
 
   for(const g of NAMED_GHOSTS) state.runners.push(createRunner(g.name,false,g.wr));
   for(const l of LETTERS) state.runners.push(createRunner(l,false,0.30));
 
-  const race=CONFIG.RACES[idx];
-  state.runners=state.runners.slice(0,race.start);
+  // ステージごとの人数
+  const race = CONFIG.RACES[idx];
+  state.runners = state.runners.slice(0, race.start);
 
+  // 初期化
   for(const r of state.runners){
-    r.x=0;r.y=0;r.vy=0;
-    r.onGround=true;r.onRail=false;r.onPipe=false;
-    r.wasOnPipe=false;r.pipeRef=null;r.pipeT=0;
-    r.jumps=0;r.boostTimer=0;r.boostPower=0;r.slowTimer=0;
-    r.rings=0;r.finished=false;r.finishTime=Infinity;
-    r.aiCd=rand(0.15,0.45);
-    r.aiBoostCd=rand(0.0, CONFIG.AI_BOOST_COOLDOWN);
+    r.x=0; r.y=0; r.vy=0;
+    r.onGround=true; r.onRail=false; r.onPipe=false;
+    r.pipeRef=null; r.pipeT=0;
+    r.jumps=0;
+    r.boostTimer=0; r.boostPower=0;
+    r.slowTimer=0; r.rings=0;
+    r.finished=false; r.finishTime=Infinity;
+    r.aiCd = rand(0.20,0.55);
+    r.aiBoostCd = rand(0.0, CONFIG.AI_BOOST_COOLDOWN);
   }
 
-  state.stock=CONFIG.STOCK_START;
-  state.stockTimer=0;
+  state.stock = CONFIG.STOCK_START;
+  state.stockTimer = 0;
 
-  state.countdown=3;
-  state.phase="countdown";
+  state.countdown = 3;
+  state.phase = "countdown";
+  nextFixed.style.display = "none";
 
-  nextFixed.style.display="none";
-
-  // ★ステージ切替時に必ずスポーン状態を初期化（PART2で定義）
+  // ★PART2で定義：レース切替時に必ずワールドを初期化
   if(typeof resetWorldForRace === "function") resetWorldForRace();
 }
 
@@ -280,13 +310,13 @@ function initRace(idx){
    RANK
 ======================= */
 function updateRank(){
-  const p=state.runners[state.playerIndex];
-  let better=0;
+  const p = state.runners[state.playerIndex];
+  let better = 0;
   for(const r of state.runners){
-    if(r!==p && r.x>p.x) better++;
+    if(r!==p && r.x > p.x) better++;
   }
-  state.rank=better+1;
-  state.rankText=`RANK ${state.rank}/${state.runners.length}`;
+  state.rank = better + 1;
+  state.rankText = `RANK ${state.rank}/${state.runners.length}`;
 }
 
 /* =======================
@@ -296,15 +326,26 @@ async function bootCore(){
   state.phase="loading";
   if(overlayTitle) overlayTitle.textContent="Loading";
   if(overlayMsg) overlayMsg.textContent="assets";
+
+  fitCanvasToPlayArea();
   resizeCanvas();
+
   await loadAssets();
+
   if(overlay) overlay.style.display="none";
-  state.lastTime=performance.now();
+  state.lastTime = performance.now();
 }
 
+/* 初回と回転対策 */
+fitCanvasToPlayArea();
+resizeCanvas();
+
 /* === PART2 START === */
-   // game.js PART 2 / 5  (v6)
-// WORLD / GROUND / SPAWN / PIPE SIZE FIX
+ // game.js v6.1  PART 2 / 5
+// WORLD / GROUND / SPAWN / OBJECT SIZE NORMALIZE
+// - ガードレール・ハーフパイプを地面基準サイズに正規化
+// - レース切替時のスポーン状態リセット
+// - 第2ステージ以降で障害物が出ない問題を解消
 
 /* =======================
    WORLD
@@ -325,7 +366,7 @@ const world = {
 };
 
 /* =======================
-   RESET WORLD PER RACE
+   RESET WORLD (per race)
 ======================= */
 function resetWorldForRace(){
   world.rails.length = 0;
@@ -343,7 +384,7 @@ function resetWorldForRace(){
    GROUND
 ======================= */
 function resetGround(){
-  // 画面サイズに対して常に安定する位置
+  // 画面サイズに対して安定する地面高さ
   world.groundH = 72;
   world.groundY = CONFIG.LOGICAL_H - world.groundH;
 }
@@ -352,72 +393,91 @@ function resetGround(){
    SPAWN CONTROLLER
 ======================= */
 function spawnWorld(camX){
-  // ---- RAIL ----
-  if(camX + CONFIG.LOGICAL_W > world.nextRailX){
+  const edge = camX + CONFIG.LOGICAL_W;
+
+  // ガードレール
+  if(edge > world.nextRailX){
     addRail(world.nextRailX);
-    world.nextRailX += rand(260,420);
+    world.nextRailX += rand(260, 420);
   }
 
-  // ---- PIPE ----
-  if(camX + CONFIG.LOGICAL_W > world.nextPipeX){
+  // ハーフパイプ
+  if(edge > world.nextPipeX){
     addPipe(world.nextPipeX);
-    world.nextPipeX += rand(520,780);
+    world.nextPipeX += rand(520, 780);
   }
 
-  // ---- PUDDLE ----
-  if(camX + CONFIG.LOGICAL_W > world.nextPuddleX){
+  // 水たまり（減速）
+  if(edge > world.nextPuddleX){
     addPuddle(world.nextPuddleX);
-    world.nextPuddleX += rand(260,380);
+    world.nextPuddleX += rand(260, 380);
   }
 
-  // ---- RING ----
-  if(camX + CONFIG.LOGICAL_W > world.nextRingX){
+  // リング（空中含む）
+  if(edge > world.nextRingX){
     addRing(world.nextRingX);
-    world.nextRingX += rand(120,200);
+    world.nextRingX += rand(120, 200);
   }
 }
 
 /* =======================
    ADD OBJECTS
 ======================= */
+
+// ---- ガードレール（正規化） ----
 function addRail(x){
   const img = IMAGES.rail;
-  const w = img.width;
-  const h = img.height * 0.78; // 低めに
+  if(!img) return;
+
+  // ★地面高さ基準で固定（cover描画でも巨大化しない）
+  const h = Math.floor(world.groundH * 0.62); // 0.55〜0.70で調整可
+  const scale = h / img.height;
+  const w = Math.floor(img.width * scale);
+
   world.rails.push({
-    x, y: world.groundY - h,
-    w, h
+    x,
+    y: world.groundY - h,
+    w,
+    h
   });
 }
 
+// ---- ハーフパイプ（正規化・大きめ） ----
 function addPipe(x){
-  const img = Math.random()<0.5 ? IMAGES.hpr : IMAGES.hpg;
+  const img = Math.random() < 0.5 ? IMAGES.hpr : IMAGES.hpg;
+  if(!img) return;
 
-  // ★ v6：サイズ拡大（高さも横も）
-  const h = Math.floor(world.groundH * 0.48); // ←ここが重要
+  // ★この画面サイズ用に少し大きめ
+  const h = Math.floor(world.groundH * 0.55); // 高さを明確に
   const scale = h / img.height;
-  const w = img.width * scale;
+  const w = Math.floor(img.width * scale * 1.15); // 横も気持ち大きく
 
   world.pipes.push({
     x,
     y: world.groundY - h,
-    w, h,
+    w,
+    h,
     img
   });
 }
 
+// ---- 水たまり（踏むと少し減速） ----
 function addPuddle(x){
   world.puddles.push({
     x,
     y: world.groundY - 8,
-    w: rand(32,48),
+    w: rand(32, 48),
     h: 6
   });
 }
 
+// ---- リング（空中にも出る） ----
 function addRing(x){
   const air = Math.random() < 0.45;
-  const y = air ? world.groundY - rand(70,120) : world.groundY - 28;
+  const y = air
+    ? world.groundY - rand(70, 120)
+    : world.groundY - 28;
+
   world.rings.push({
     x,
     y,
@@ -427,15 +487,20 @@ function addRing(x){
 }
 
 /* =======================
-   COLLISION HELPERS
+   COLLISION HELPER
 ======================= */
 function rectHit(ax,ay,aw,ah,bx,by,bw,bh){
-  return ax < bx+bw && ax+aw > bx && ay < by+bh && ay+ah > by;
+  return ax < bx + bw && ax + aw > bx &&
+         ay < by + bh && ay + ah > by;
 }
 
 /* === PART3 START === */
-   // game.js PART 3 / 5  (v6)
-// MOVE / JUMP / RAIL / PIPE (SLOPE FIX) / RING BOOST
+ // game.js v6.1  PART 3 / 5
+// RUN / JUMP / RAIL / PIPE (SLOPE) / RING EFFECT
+// - ハーフパイプで必ず上がる（sinカーブ）
+// - レールに乗ると軽く加速
+// - リング10個で小ブースト
+// - AIブーストは5秒CDで抑制
 
 /* =======================
    RUN UPDATE
@@ -444,13 +509,13 @@ function updateRun(dt){
   const race = CONFIG.RACES[state.raceIndex];
   const player = state.runners[state.playerIndex];
 
-  // カメラ
+  // カメラ：常にプレイヤー左寄せ
   state.cameraX = player.x - 80;
   if(state.cameraX < 0) state.cameraX = 0;
 
   spawnWorld(state.cameraX);
 
-  // プレイヤーのストック回復（5秒）
+  // プレイヤーのブースト回復（5秒で1）
   state.stockTimer += dt;
   if(state.stockTimer >= CONFIG.STOCK_REGEN){
     state.stockTimer = 0;
@@ -460,27 +525,26 @@ function updateRun(dt){
   for(const r of state.runners){
     if(r.finished) continue;
 
-    // --------- AI ----------
+    /* ---------- AI ---------- */
     if(!r.isPlayer){
       r.aiCd -= dt;
       r.aiBoostCd -= dt;
 
       if(r.aiCd <= 0){
-        r.aiCd = rand(0.25,0.55);
-
+        r.aiCd = rand(0.25, 0.55);
         if(Math.random() < 0.015){
           doJump(r);
         }
       }
 
-      // AIブースト（★5秒クールダウン）
+      // AIブースト（勝率＋5秒CD）
       if(r.aiBoostCd <= 0 && Math.random() < r.winRate * 0.12){
         r.aiBoostCd = CONFIG.AI_BOOST_COOLDOWN;
         startBoost(r, CONFIG.BOOST_ADD, CONFIG.BOOST_TIME);
       }
     }
 
-    // --------- INPUT ----------
+    /* ---------- PLAYER INPUT ---------- */
     if(r.isPlayer){
       if(input.jump){
         doJump(r);
@@ -493,7 +557,7 @@ function updateRun(dt){
       }
     }
 
-    // --------- PHYSICS ----------
+    /* ---------- SPEED ---------- */
     let speed = CONFIG.BASE_SPEED;
 
     if(r.boostTimer > 0){
@@ -506,19 +570,22 @@ function updateRun(dt){
       speed *= 0.75;
     }
 
-    // ---- PIPE SLOPE ----
+    /* ---------- PIPE SLOPE ---------- */
     if(r.onPipe && r.pipeRef){
-      // 正規化された進行度 t (0-1)
+      // 0→1 の進行度
       r.pipeT = clamp((r.x - r.pipeRef.x) / r.pipeRef.w, 0, 1);
 
-      // 半円スロープ：sinカーブで上下
+      // 半円カーブ
       const angle = Math.PI * r.pipeT;
       const lift = Math.sin(angle);
 
-      // ★上がらない問題の修正点
+      // 位置更新（★必ず上がる）
       r.y = r.pipeRef.y + r.pipeRef.h - lift * r.pipeRef.h - r.h;
-      speed += lift * 160; // 坂加速
 
+      // 坂加速
+      speed += lift * 160;
+
+      // 抜け
       if(r.pipeT >= 1){
         r.onPipe = false;
         r.pipeRef = null;
@@ -531,9 +598,10 @@ function updateRun(dt){
       r.y += r.vy * dt;
     }
 
+    // 水平方向
     r.x += speed * dt;
 
-    // --------- GROUND ----------
+    /* ---------- GROUND ---------- */
     if(!r.onPipe){
       if(r.y + r.h >= world.groundY){
         r.y = world.groundY - r.h;
@@ -545,11 +613,11 @@ function updateRun(dt){
       }
     }
 
-    // --------- RAIL ----------
+    /* ---------- RAIL ---------- */
     if(!r.onPipe){
       for(const rail of world.rails){
-        if(rectHit(r.x,r.y,r.w,r.h, rail.x,rail.y,rail.w,rail.h)){
-          if(r.vy >= 0 && r.y + r.h - r.vy*dt <= rail.y){
+        if(rectHit(r.x, r.y, r.w, r.h, rail.x, rail.y, rail.w, rail.h)){
+          if(r.vy >= 0 && r.y + r.h - r.vy * dt <= rail.y){
             r.y = rail.y - r.h;
             r.vy = 0;
             r.onGround = true;
@@ -560,11 +628,11 @@ function updateRun(dt){
       }
     }
 
-    // --------- PIPE ENTER ----------
+    /* ---------- PIPE ENTER ---------- */
     if(!r.onPipe){
       for(const pipe of world.pipes){
-        if(rectHit(r.x,r.y,r.w,r.h, pipe.x,pipe.y,pipe.w,pipe.h)){
-          if(r.vy >= 0 && r.y + r.h - r.vy*dt <= pipe.y){
+        if(rectHit(r.x, r.y, r.w, r.h, pipe.x, pipe.y, pipe.w, pipe.h)){
+          if(r.vy >= 0 && r.y + r.h - r.vy * dt <= pipe.y){
             r.onPipe = true;
             r.pipeRef = pipe;
             r.pipeT = 0;
@@ -575,19 +643,19 @@ function updateRun(dt){
       }
     }
 
-    // --------- PUDDLE ----------
+    /* ---------- PUDDLE ---------- */
     for(const p of world.puddles){
-      if(rectHit(r.x,r.y,r.w,r.h, p.x,p.y,p.w,p.h)){
+      if(rectHit(r.x, r.y, r.w, r.h, p.x, p.y, p.w, p.h)){
         r.slowTimer = 0.4;
       }
     }
 
-    // --------- RING ----------
+    /* ---------- RING ---------- */
     for(const ring of world.rings){
       if(!ring.taken){
         const dx = (r.x + r.w/2) - ring.x;
         const dy = (r.y + r.h/2) - ring.y;
-        if(dx*dx + dy*dy < ring.r*ring.r*4){
+        if(dx*dx + dy*dy < ring.r * ring.r * 4){
           ring.taken = true;
           r.rings++;
           if(r.rings >= CONFIG.RING_NEED){
@@ -598,7 +666,7 @@ function updateRun(dt){
       }
     }
 
-    // --------- FINISH ----------
+    /* ---------- FINISH ---------- */
     if(!r.finished && r.x / CONFIG.PX_PER_M >= race.goal){
       r.finished = true;
       r.finishTime = state.time;
@@ -609,7 +677,6 @@ function updateRun(dt){
   state.time += dt;
   updateRank();
 
-  // ---- END CHECK ----
   if(state.finishedCount >= race.survive){
     state.phase = "result";
     nextFixed.style.display = "block";
@@ -630,17 +697,21 @@ function doJump(r){
   }
 }
 
-function startBoost(r,power,time){
+function startBoost(r, power, time){
   r.boostPower = power;
   r.boostTimer = time;
 }
 
 /* === PART4 START === */
-   // game.js PART 4 / 5  (v6)
-// RENDER (COVER -> 黒帯消し) / COUNTDOWN暗転軽減 / PLAYER LABEL / RESULT CENTER
+ // game.js v6.1  PART 4 / 5
+// RENDER / COVER SCALE / DRAW ORDER FIX
+// - 左右黒帯なし（cover）
+// - キャラクターは常に最前面
+// - 地面・オブジェクト・UIの描画整理
+// - カウントダウン暗転を薄く
 
 /* =======================
-   DRAW BASE
+   DRAW BASE (COVER)
 ======================= */
 function beginDraw(){
   const cw = canvas.width;
@@ -649,36 +720,38 @@ function beginDraw(){
   const sx = cw / CONFIG.LOGICAL_W;
   const sy = ch / CONFIG.LOGICAL_H;
 
-  // ★黒帯を消す：画面を埋める（cover）
+  // 画面を埋める（左右黒帯なし）
   const s = Math.max(sx, sy);
   const ox = (cw - CONFIG.LOGICAL_W * s) * 0.5;
   const oy = (ch - CONFIG.LOGICAL_H * s) * 0.5;
 
-  ctx.setTransform(s,0,0,s,ox,oy);
+  ctx.setTransform(s, 0, 0, s, ox, oy);
   ctx.imageSmoothingEnabled = false;
 }
 
 /* =======================
-   BG
+   BACKGROUND
 ======================= */
 function drawSky(){
-  const g = ctx.createLinearGradient(0,0,0,CONFIG.LOGICAL_H);
-  g.addColorStop(0,"#2a6ccf");
-  g.addColorStop(0.6,"#163d7a");
-  g.addColorStop(1,"#071727");
+  const g = ctx.createLinearGradient(0, 0, 0, CONFIG.LOGICAL_H);
+  g.addColorStop(0, "#2a6ccf");
+  g.addColorStop(0.6, "#163d7a");
+  g.addColorStop(1, "#071727");
   ctx.fillStyle = g;
-  ctx.fillRect(0,0,CONFIG.LOGICAL_W,CONFIG.LOGICAL_H);
+  ctx.fillRect(0, 0, CONFIG.LOGICAL_W, CONFIG.LOGICAL_H);
 }
 
+/* =======================
+   STAGE / GROUND
+======================= */
 function drawStage(){
-  // ground shade
-  ctx.fillStyle = "rgba(0,0,0,0.20)";
+  // 地面影
+  ctx.fillStyle = "rgba(0,0,0,0.25)";
   ctx.fillRect(0, world.groundY, CONFIG.LOGICAL_W, world.groundH);
 
   const img = IMAGES.stage;
   if(!img) return;
 
-  // scale stage image to groundH
   const s = world.groundH / img.height;
   const w = Math.max(1, Math.floor(img.width * s));
   let x = -((state.cameraX % w + w) % w);
@@ -692,33 +765,33 @@ function drawStage(){
    OBJECTS
 ======================= */
 function drawObjects(){
-  // puddles
-  ctx.fillStyle="rgba(120,190,255,0.55)";
+  // 水たまり
+  ctx.fillStyle = "rgba(120,190,255,0.55)";
   for(const p of world.puddles){
     const sx = p.x - state.cameraX;
-    if(sx < -120 || sx > CONFIG.LOGICAL_W + 120) continue;
+    if(sx < -100 || sx > CONFIG.LOGICAL_W + 100) continue;
     ctx.fillRect(sx, p.y, p.w, p.h);
   }
 
-  // rings
+  // リング
   const ringImg = IMAGES.ring;
   if(ringImg){
     for(const r of world.rings){
       if(r.taken) continue;
       const sx = r.x - state.cameraX;
-      if(sx < -120 || sx > CONFIG.LOGICAL_W + 120) continue;
+      if(sx < -100 || sx > CONFIG.LOGICAL_W + 100) continue;
       ctx.drawImage(ringImg, sx - 10, r.y - 10, 20, 20);
     }
   }
 
-  // pipes
+  // ハーフパイプ
   for(const p of world.pipes){
     const sx = p.x - state.cameraX;
-    if(sx < -260 || sx > CONFIG.LOGICAL_W + 260) continue;
+    if(sx < -240 || sx > CONFIG.LOGICAL_W + 240) continue;
     ctx.drawImage(p.img, sx, p.y, p.w, p.h);
   }
 
-  // rails
+  // ガードレール
   const railImg = IMAGES.rail;
   if(railImg){
     for(const r of world.rails){
@@ -730,7 +803,7 @@ function drawObjects(){
 }
 
 /* =======================
-   RUNNERS
+   RUNNERS (ALWAYS FRONT)
 ======================= */
 function screenXOf(r){
   if(r.isPlayer) return Math.floor(CONFIG.LOGICAL_W * 0.18);
@@ -740,34 +813,36 @@ function screenXOf(r){
 
 function drawRunner(r){
   const sx = screenXOf(r);
-  if(sx < -120 || sx > CONFIG.LOGICAL_W + 120) return;
+  if(sx < -100 || sx > CONFIG.LOGICAL_W + 100) return;
 
-  // shadow
-  ctx.fillStyle="rgba(0,0,0,0.25)";
+  // 影
+  ctx.fillStyle = "rgba(0,0,0,0.25)";
   ctx.beginPath();
   ctx.ellipse(sx + r.w/2, world.groundY + 5, r.w*0.35, 5, 0, 0, Math.PI*2);
   ctx.fill();
 
-  // board
+  // ボード
   const board = IMAGES.board;
   if(board){
     ctx.drawImage(board, sx - r.w*0.05, r.y + r.h*0.65, r.w*1.1, r.h*0.45);
   }
 
-  // body
+  // 本体
   const body = (r.onGround || r.onRail || r.onPipe) ? IMAGES.pl1 : IMAGES.pl2;
-  if(body) ctx.drawImage(body, sx, r.y, r.w, r.h);
+  if(body){
+    ctx.drawImage(body, sx, r.y, r.w, r.h);
+  }
 
-  // label
+  // プレイヤーラベル
   if(r.isPlayer){
-    ctx.font="10px system-ui";
-    ctx.textAlign="center";
-    ctx.strokeStyle="rgba(0,0,0,0.85)";
-    ctx.lineWidth=3;
-    ctx.fillStyle="rgba(255,255,255,0.95)";
+    ctx.font = "10px system-ui";
+    ctx.textAlign = "center";
+    ctx.strokeStyle = "rgba(0,0,0,0.9)";
+    ctx.lineWidth = 3;
+    ctx.fillStyle = "rgba(255,255,255,0.95)";
     ctx.strokeText("プレイヤー", sx + r.w/2, r.y - 6);
     ctx.fillText("プレイヤー", sx + r.w/2, r.y - 6);
-    ctx.textAlign="left";
+    ctx.textAlign = "left";
   }
 }
 
@@ -775,36 +850,35 @@ function drawRunner(r){
    RESULT
 ======================= */
 function drawResult(){
-  ctx.fillStyle="rgba(0,0,0,0.85)";
-  ctx.fillRect(0,0,CONFIG.LOGICAL_W,CONFIG.LOGICAL_H);
+  ctx.fillStyle = "rgba(0,0,0,0.88)";
+  ctx.fillRect(0, 0, CONFIG.LOGICAL_W, CONFIG.LOGICAL_H);
 
-  ctx.fillStyle="#fff";
-  ctx.textAlign="center";
-  ctx.font="bold 28px system-ui";
+  ctx.textAlign = "center";
+  ctx.fillStyle = "#fff";
+  ctx.font = "bold 28px system-ui";
   ctx.fillText(`RESULT - ${CONFIG.RACES[state.raceIndex].name}`, CONFIG.LOGICAL_W/2, 64);
 
-  const list=[...state.runners].sort((a,b)=>a.finishTime-b.finishTime);
+  const list = [...state.runners].sort((a,b)=>a.finishTime-b.finishTime);
 
-  ctx.font="18px system-ui";
-  let y=120;
-  for(let i=0;i<list.length && i<10;i++){
-    const r=list[i];
-    const t=isFinite(r.finishTime)?`${r.finishTime.toFixed(2)}s`:"--";
-    ctx.fillStyle=r.isPlayer?"#00ffcc":"#ffffff";
+  ctx.font = "18px system-ui";
+  let y = 120;
+  for(let i=0; i<list.length && i<10; i++){
+    const r = list[i];
+    const t = isFinite(r.finishTime) ? `${r.finishTime.toFixed(2)}s` : "--";
+    ctx.fillStyle = r.isPlayer ? "#00ffcc" : "#ffffff";
     ctx.fillText(`${i+1}. ${r.name}   ${t}`, CONFIG.LOGICAL_W/2, y);
     y += 34;
   }
-  ctx.textAlign="left";
+  ctx.textAlign = "left";
 }
 
 /* =======================
-   RENDER
+   MAIN RENDER
 ======================= */
 function render(){
-  // ★残像完全防止（毎フレーム完全クリア）
+  // 残像完全防止
   ctx.setTransform(1,0,0,1,0,0);
-  ctx.globalCompositeOperation="source-over";
-  ctx.fillStyle="#000";
+  ctx.fillStyle = "#000";
   ctx.fillRect(0,0,canvas.width,canvas.height);
 
   beginDraw();
@@ -813,27 +887,27 @@ function render(){
   drawStage();
   drawObjects();
 
-  // runners (named first for readability)
+  // キャラは最後に描く（必ず最前面）
   for(const r of state.runners){
-    if(!r.isPlayer && r.winRate > 0.30) drawRunner(r);
+    if(!r.isPlayer && r.winRate > 0.30){
+      drawRunner(r);
+    }
   }
   drawRunner(state.runners[state.playerIndex]);
 
-  // version small (邪魔にならない位置)
-  ctx.font="10px system-ui";
-  ctx.fillStyle="rgba(255,255,255,0.55)";
+  // バージョン表示
+  ctx.font = "10px system-ui";
+  ctx.fillStyle = "rgba(255,255,255,0.6)";
   ctx.fillText(VERSION, 8, CONFIG.LOGICAL_H - 10);
 
   if(state.phase === "countdown"){
-    // ★暗転を軽くする（黒い影が覆う問題）
-    ctx.fillStyle="rgba(0,0,0,0.14)";
+    ctx.fillStyle = "rgba(0,0,0,0.14)";
     ctx.fillRect(0,0,CONFIG.LOGICAL_W,CONFIG.LOGICAL_H);
-
-    ctx.fillStyle="#fff";
-    ctx.font="bold 64px system-ui";
-    ctx.textAlign="center";
+    ctx.fillStyle = "#fff";
+    ctx.font = "bold 64px system-ui";
+    ctx.textAlign = "center";
     ctx.fillText(Math.ceil(state.countdown), CONFIG.LOGICAL_W/2, CONFIG.LOGICAL_H/2);
-    ctx.textAlign="left";
+    ctx.textAlign = "left";
   }
 
   if(state.phase === "result"){
@@ -842,9 +916,15 @@ function render(){
 }
 
 /* === PART5 START === */
-   // game.js PART 5 / 5  (v6)
+   // game.js v6.1  PART 5 / 5
 // LOOP / COUNTDOWN / NEXT / BOOT
+// - 安定したメインループ
+// - カウントダウン→レース開始
+// - リザルト後に NEXT RACE で進行
 
+/* =======================
+   COUNTDOWN
+======================= */
 function updateCountdown(dt){
   state.countdown -= dt;
   if(state.countdown <= 0){
@@ -852,6 +932,9 @@ function updateCountdown(dt){
   }
 }
 
+/* =======================
+   UPDATE
+======================= */
 function update(dt){
   if(state.phase === "countdown"){
     updateCountdown(dt);
@@ -862,9 +945,12 @@ function update(dt){
     updateRun(dt);
     return;
   }
-  // result: input is NEXT only
+  // result中は描画のみ（NEXT待ち）
 }
 
+/* =======================
+   MAIN LOOP
+======================= */
 function loop(t){
   const dt = Math.min((t - state.lastTime) / 1000, 0.033);
   state.lastTime = t;
@@ -876,43 +962,58 @@ function loop(t){
   requestAnimationFrame(loop);
 }
 
-/* ---------- NEXT ---------- */
+/* =======================
+   NEXT RACE
+======================= */
 nextFixed.addEventListener("pointerdown", ()=>{
   nextFixed.style.display = "none";
 
-  const nextIdx = (state.raceIndex < CONFIG.RACES.length - 1) ? (state.raceIndex + 1) : 0;
+  const nextIdx =
+    (state.raceIndex < CONFIG.RACES.length - 1)
+      ? state.raceIndex + 1
+      : 0;
 
   initRace(nextIdx);
   resetWorldForRace();
   resetGround();
 
-  // レース開始直後から湧くように
+  // 開始直後から障害物を出す
   spawnWorld(0);
+
+  // 全ランナー初期位置
+  for(const r of state.runners){
+    r.x = 0;
+    r.y = world.groundY - r.h;
+    r.vy = 0;
+    r.onGround = true;
+    r.onPipe = false;
+    r.pipeRef = null;
+    r.pipeT = 0;
+  }
 
   state.time = 0;
   state.countdown = 3;
   state.phase = "countdown";
 });
 
-/* ---------- boot ---------- */
+/* =======================
+   BOOT
+======================= */
 async function boot(){
   try{
     await bootCore();
 
+    // 初期レース
     initRace(0);
     resetWorldForRace();
     resetGround();
     spawnWorld(0);
 
-    // 初期配置
     for(const r of state.runners){
       r.x = 0;
       r.y = world.groundY - r.h;
       r.vy = 0;
       r.onGround = true;
-      r.onPipe = false;
-      r.pipeRef = null;
-      r.pipeT = 0;
     }
 
     state.time = 0;
@@ -923,9 +1024,9 @@ async function boot(){
     requestAnimationFrame(loop);
   }catch(e){
     if(overlay){
-      overlay.style.display="block";
-      if(overlayTitle) overlayTitle.textContent="Error";
-      if(overlayMsg) overlayMsg.textContent=String(e);
+      overlay.style.display = "block";
+      if(overlayTitle) overlayTitle.textContent = "Error";
+      if(overlayMsg) overlayMsg.textContent = String(e);
     }
     console.error(e);
   }
