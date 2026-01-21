@@ -1,9 +1,9 @@
-// game.js PART 1 / 5  (FIXED2)
-// VERSION: v1.2.1-fix2-loading-rank-result-pipe-boost
+// game.js PART 1 / 5  (FIXED3)
+// VERSION: v1.2.2-fix3-pipe-climb-hud
 (() => {
 "use strict";
 
-const VERSION = "v1.2.1-fix2-loading-rank-result-pipe-boost";
+const VERSION = "v1.2.2-fix3-pipe-climb-hud";
 
 /* =======================
    DOM
@@ -18,11 +18,29 @@ const overlayMsg = document.getElementById("overlayMsg");
 const btnJump = document.getElementById("btnJump");
 const btnBoost = document.getElementById("btnBoost");
 const btnJumpBoost = document.getElementById("btnJumpBoost");
-const btnNext = document.getElementById("btnNext"); // result -> next race
+const btnNext = document.getElementById("btnNext");
 
 const hudSpeed = document.getElementById("hudSpeed");
 const hudDist  = document.getElementById("hudDist");
-const hudRank  = document.getElementById("hudRank"); // あるなら使う（無くてもOK）
+
+/* =======================
+   FORCE HUD (ALWAYS VISIBLE)
+======================= */
+let hudFixed = document.getElementById("jsHudFixed");
+if(!hudFixed){
+  hudFixed = document.createElement("div");
+  hudFixed.id = "jsHudFixed";
+  hudFixed.style.position = "fixed";
+  hudFixed.style.left = "10px";
+  hudFixed.style.top = "10px";
+  hudFixed.style.zIndex = "99999";
+  hudFixed.style.pointerEvents = "none";
+  hudFixed.style.font = "12px system-ui";
+  hudFixed.style.color = "rgba(255,255,255,0.95)";
+  hudFixed.style.textShadow = "0 1px 2px rgba(0,0,0,0.8)";
+  hudFixed.style.whiteSpace = "pre";
+  document.body.appendChild(hudFixed);
+}
 
 /* =======================
    MOBILE LOCK
@@ -56,7 +74,7 @@ const CONFIG = {
   JUMPBOOST_ADD: 520,
   JUMPBOOST_TIME: 1.25,
 
-  // ★ここを完全に固定（5秒/最大5/初期0）
+  // ★固定：5秒 / 最大5 / 初期0
   STOCK_MAX: 5,
   STOCK_REGEN: 5.0,
   STOCK_START: 0,
@@ -120,12 +138,14 @@ const state={
   stockTimer:0,
 
   cameraX:0,
+
   runners:[],
   playerIndex:0,
 
   countdown:3,
   finishedCount:0,
 
+  rank:1,
   rankText:""
 };
 
@@ -137,15 +157,25 @@ function createRunner(name,isPlayer,winRate){
     name,isPlayer,winRate,
     x:0,y:0,vy:0,
     w:CONFIG.PLAYER_SIZE,h:CONFIG.PLAYER_SIZE,
-    onGround:true,onRail:false,onPipe:false,
-    jumps:0,
-    boostTimer:0,boostPower:0,
-    slowTimer:0,rings:0,
-    finished:false,finishTime:Infinity,
 
-    // pipe info (for slope accel)
+    onGround:true,
+    onRail:false,
+    onPipe:false,
+
+    // ★前フレーム状態を保持（パイプ継続吸着に必要）
+    wasOnPipe:false,
     pipeRef:null,
     pipeT:0,
+
+    jumps:0,
+    boostTimer:0,
+    boostPower:0,
+
+    slowTimer:0,
+    rings:0,
+
+    finished:false,
+    finishTime:Infinity,
 
     aiCd:rand(0.2,0.6)
   };
@@ -207,9 +237,9 @@ function initRace(idx){
   for(const r of state.runners){
     r.x=0;r.y=0;r.vy=0;
     r.onGround=true;r.onRail=false;r.onPipe=false;
+    r.wasOnPipe=false;r.pipeRef=null;r.pipeT=0;
     r.jumps=0;r.boostTimer=0;r.boostPower=0;r.slowTimer=0;
     r.rings=0;r.finished=false;r.finishTime=Infinity;
-    r.pipeRef=null;r.pipeT=0;
   }
 
   state.stock=CONFIG.STOCK_START;
@@ -222,7 +252,7 @@ function initRace(idx){
 }
 
 /* =======================
-   RANK
+   RANK + FIXED HUD TEXT
 ======================= */
 function updateRank(){
   const p=state.runners[state.playerIndex];
@@ -230,8 +260,19 @@ function updateRank(){
   for(const r of state.runners){
     if(r!==p && r.x>p.x) better++;
   }
-  state.rankText=`RANK ${better+1}/${state.runners.length}`;
-  if(hudRank) hudRank.textContent = state.rankText; // HTMLがあるなら同期
+  state.rank = better+1;
+  state.rankText = `RANK ${state.rank}/${state.runners.length}`;
+}
+
+function updateFixedHud(){
+  const p=state.runners[state.playerIndex];
+  const dist = Math.floor(p.x/CONFIG.PX_PER_M);
+  hudFixed.textContent =
+`${VERSION}
+${CONFIG.RACES[state.raceIndex].name}  DIST ${dist}m
+${state.rankText}
+BOOST ${state.stock}/${CONFIG.STOCK_MAX}  (regen ${CONFIG.STOCK_REGEN}s)
+RING ${p.rings}/${CONFIG.RING_NEED}`;
 }
 
 /* =======================
@@ -244,37 +285,38 @@ async function bootCore(){
   resizeCanvas();
   await loadAssets();
 
-  // ★Loadingを必ず消す（今回の主原因）
+  // ★Loadingを確実に消す
   if(overlay) overlay.style.display="none";
 
   state.lastTime=performance.now();
 }
 
 /* === PART2 START === */
- // game.js PART 2 / 5  (FIXED2)
-// WORLD / SPAWN / NON-OVERLAP / PLAYER-ONLY RINGS
+ // game.js PART 2 / 5  (FIXED3)
+// WORLD / SPAWN / NON-OVERLAP
 
 const world = {
   groundH: 170,
   groundTop: 0,
 
   rails: [],
-  puddles: [],
   pipes: [],
+  puddles: [],
   rings: [],
 
   nextRailX: 220,
-  nextPuddleX: 260,
   nextPipeX: 700,
+  nextPuddleX: 260,
   nextRingX: 260,
 
   goalX: 0
 };
 
 function resetGround(){
-  const st=IMAGES.stage;
+  const st = IMAGES.stage;
   world.groundH = st ? Math.max(130, Math.min(210, st.height)) : 170;
   world.groundTop = CONFIG.LOGICAL_H - world.groundH;
+
   for(const r of state.runners){
     r.y = world.groundTop - r.h;
   }
@@ -285,64 +327,94 @@ function setGoal(){
   world.goalX = race.goal * CONFIG.PX_PER_M;
 }
 
-function overlapsAny(x,w,list,margin=20){
+/* ---------- overlap ---------- */
+function overlapsAny(x,w,list,margin=40){
   for(const o of list){
-    if(x < o.x + o.w + margin && x + w + margin > o.x) return true;
+    if(x < o.x + o.w + margin && x + w + margin > o.x){
+      return true;
+    }
   }
   return false;
 }
 
+/* ---------- rail ---------- */
 function addRail(x){
-  const img=IMAGES.rail;
-  const h=Math.floor(world.groundH*0.38);
-  const w=img?Math.floor(img.width*(h/img.height)):140;
+  const img = IMAGES.rail;
+  const h = Math.floor(world.groundH * 0.38);
+  const w = img ? Math.floor(img.width * (h / img.height)) : 140;
 
-  if(overlapsAny(x,w,world.pipes,80)){
-    world.nextRailX = x + w + 220;
+  if(overlapsAny(x,w,world.pipes,100)){
+    world.nextRailX = x + w + 260;
     return;
   }
 
-  world.rails.push({x,y:world.groundTop-h,w,h});
-  world.nextRailX = x + w + rand(220, 460);
+  world.rails.push({
+    x,
+    y: world.groundTop - h,
+    w,
+    h
+  });
+
+  world.nextRailX = x + w + rand(260,480);
 }
 
+/* ---------- pipe ---------- */
 function addPipe(x){
-  const img=(Math.random()<0.5)?IMAGES.hpr:IMAGES.hpg;
+  const img = Math.random()<0.5 ? IMAGES.hpr : IMAGES.hpg;
   if(!img) return;
 
-  const h=Math.floor(world.groundH*0.38);
-  const w=Math.floor(img.width*(h/img.height));
+  const h = Math.floor(world.groundH * 0.38);
+  const w = Math.floor(img.width * (h / img.height));
 
-  if(overlapsAny(x,w,world.rails,80)){
-    world.nextPipeX = x + w + 320;
+  if(overlapsAny(x,w,world.rails,100)){
+    world.nextPipeX = x + w + 360;
     return;
   }
 
-  world.pipes.push({x,y:world.groundTop-h,w,h,img});
-  world.nextPipeX = x + w + rand(680, 880);
+  world.pipes.push({
+    x,
+    y: world.groundTop - h,
+    w,
+    h,
+    img
+  });
+
+  world.nextPipeX = x + w + rand(720,900);
 }
 
+/* ---------- puddle ---------- */
 function addPuddle(x){
-  const w=rand(46,92);
-  const h=12;
-  world.puddles.push({x,y:world.groundTop+world.groundH*0.22,w,h});
-  world.nextPuddleX = x + w + rand(220, 400);
+  const w = rand(48,96);
+  const h = 12;
+  world.puddles.push({
+    x,
+    y: world.groundTop + world.groundH * 0.22,
+    w,
+    h
+  });
+  world.nextPuddleX = x + w + rand(220,380);
 }
 
-// ★リングはプレイヤー専用
+/* ---------- ring (player only) ---------- */
 function addRing(x){
-  const s=22;
-  world.rings.push({x,y:world.groundTop-s-26,w:s,h:s});
-  world.nextRingX = x + rand(130, 220);
+  const s = 22;
+  world.rings.push({
+    x,
+    y: world.groundTop - s - 26,
+    w: s,
+    h: s
+  });
+  world.nextRingX = x + rand(140,220);
 }
 
+/* ---------- spawn ---------- */
 function spawnWorld(px){
   const ahead = px + 1000;
   const behind = px - 420;
 
-  while(world.nextRingX < ahead) addRing(world.nextRingX);
-  while(world.nextRailX < ahead) addRail(world.nextRailX);
-  while(world.nextPipeX < ahead) addPipe(world.nextPipeX);
+  while(world.nextRingX < ahead)   addRing(world.nextRingX);
+  while(world.nextRailX < ahead)   addRail(world.nextRailX);
+  while(world.nextPipeX < ahead)   addPipe(world.nextPipeX);
   while(world.nextPuddleX < ahead) addPuddle(world.nextPuddleX);
 
   world.rings   = world.rings.filter(o=>o.x+o.w>behind);
@@ -351,17 +423,19 @@ function spawnWorld(px){
   world.puddles = world.puddles.filter(o=>o.x+o.w>behind);
 }
 
+/* ---------- countdown ---------- */
 function updateCountdown(dt){
   state.countdown -= dt;
   if(state.countdown <= 0){
-    state.phase="run";
+    state.phase = "run";
   }
 }
 
 /* === PART3 START === */
- // game.js PART 3 / 5  (FIXED2)
-// PHYSICS / RAIL / PIPE SLOPE ACCEL / BOOST FIX
+ // game.js PART 3 / 5  (FIXED3)
+// PHYSICS / PIPE CLIMB FIX / BOOST STOCK FIX
 
+/* ---------- stock ---------- */
 function regenStock(dt){
   state.stockTimer += dt;
   while(state.stockTimer >= CONFIG.STOCK_REGEN){
@@ -370,16 +444,16 @@ function regenStock(dt){
   }
 }
 
+/* ---------- boost/jump ---------- */
 function applyBoost(r, add, t){
   r.boostPower = add;
   r.boostTimer = t;
 }
-
 function tryJump(r){
   if(r.onGround || r.onRail || r.onPipe){
     r.vy = -CONFIG.JUMP_V1;
     r.jumps = 1;
-    r.onGround=r.onRail=r.onPipe=false;
+    r.onGround = r.onRail = r.onPipe = false;
     return;
   }
   if(r.jumps < 2){
@@ -388,11 +462,12 @@ function tryJump(r){
   }
 }
 
-/* ---- Rail ---- */
+/* ---------- rail collision ---------- */
 function updateRail(r, prevY){
   const cx = r.x + r.w*0.5;
   for(const rail of world.rails){
     if(cx < rail.x || cx > rail.x + rail.w) continue;
+
     const top = rail.y;
     const prevFoot = prevY + r.h;
     const foot = r.y + r.h;
@@ -400,116 +475,166 @@ function updateRail(r, prevY){
     if(prevFoot <= top && foot >= top && r.vy >= 0){
       r.y = top - r.h;
       r.vy = 0;
-      r.onRail=true;
-      r.onGround=false;
-      r.jumps=0;
+      r.onRail = true;
+      r.onGround = false;
+      r.jumps = 0;
       return true;
     }
   }
-  r.onRail=false;
+  r.onRail = false;
   return false;
 }
 
-/* ---- Pipe ---- */
+/* ---------- pipe helpers ---------- */
 function pipeAt(cx){
   for(const p of world.pipes){
     if(cx >= p.x && cx <= p.x + p.w) return p;
   }
   return null;
 }
-function pipeSurfaceY(pipe, cx){
-  const t = (cx - pipe.x) / pipe.w;
+function pipeSurfaceY(pipe, t){
+  // t:0..1
+  const cx = pipe.x + pipe.w * t;
   const depth = pipe.h * 0.55;
   return pipe.y + pipe.h*0.2 + depth * Math.sin(Math.PI * t);
 }
 
+/* ---------- pipe collision (CLIMB FIX) ----------
+   ポイント：
+   - 前フレームonPipeなら、多少浮いても再吸着させる
+   - 足元の前後2点で安定判定
+   - 端は床扱い + 登り切り補助（抜ける）
+----------------------------------------------- */
 function updatePipe(r, prevY){
   const cx = r.x + r.w*0.5;
   const pipe = pipeAt(cx);
+
   r.pipeRef = pipe;
-  r.pipeT = pipe ? clamp((cx - pipe.x)/pipe.w,0,1) : 0;
+  r.pipeT = pipe ? clamp((cx - pipe.x)/pipe.w, 0, 1) : 0;
 
-  if(!pipe) return false;
+  if(!pipe){
+    r.onPipe = false;
+    return false;
+  }
 
-  // 端は床扱い
-  if(cx < pipe.x + 8 || cx > pipe.x + pipe.w - 8){
+  // 端は床扱い（乗れる）
+  if(cx < pipe.x + 10 || cx > pipe.x + pipe.w - 10){
     const top = pipe.y;
     const prevFoot = prevY + r.h;
     const foot = r.y + r.h;
+
     if(prevFoot <= top && foot >= top && r.vy >= 0){
       r.y = top - r.h;
       r.vy = 0;
-      r.onPipe=false;
-      r.onGround=true;
-      r.jumps=0;
+      r.onPipe = false;
+      r.onGround = true;
+      r.jumps = 0;
+      return true;
+    }
+
+    // ★登り切り補助：端付近でonPipe継続してたら床へスナップ
+    if(r.wasOnPipe && r.vy >= -200){
+      r.y = top - r.h;
+      r.vy = 0;
+      r.onPipe = false;
+      r.onGround = true;
+      r.jumps = 0;
       return true;
     }
     return false;
   }
 
-  const surface = pipeSurfaceY(pipe, cx);
+  // 足元の前後2点で安定判定
+  const t1 = clamp((r.x + r.w*0.25 - pipe.x) / pipe.w, 0, 1);
+  const t2 = clamp((r.x + r.w*0.75 - pipe.x) / pipe.w, 0, 1);
+  const s1 = pipeSurfaceY(pipe, t1);
+  const s2 = pipeSurfaceY(pipe, t2);
+  const surface = Math.min(s1, s2); // 低い方に合わせる（めり込み防止）
+
   const prevFoot = prevY + r.h;
   const foot = r.y + r.h;
 
+  // 通常吸着
   if(prevFoot <= surface && foot >= surface && r.vy >= 0){
     r.y = surface - r.h;
     r.vy = 0;
-    r.onPipe=true;
-    r.onGround=false;
-    r.jumps=0;
+    r.onPipe = true;
+    r.onGround = false;
+    r.jumps = 0;
     return true;
   }
-  if(r.onPipe){
-    r.y = surface - r.h;
-    r.vy = 0;
-    return true;
+
+  // ★継続吸着：前フレームonPipeなら多少浮いても吸い戻す
+  if(r.wasOnPipe){
+    // 足がsurfaceから少し上にいても吸い付ける
+    const maxGap = 18; // ここを大きくすると落ちにくい
+    if(foot <= surface + maxGap){
+      r.y = surface - r.h;
+      r.vy = 0;
+      r.onPipe = true;
+      r.onGround = false;
+      r.jumps = 0;
+      return true;
+    }
   }
+
   return false;
 }
 
-/* ---- Speed (Pipe Slope) ---- */
+/* ---------- speed ---------- */
 function speedOf(r){
   let s = CONFIG.BASE_SPEED * (r.isPlayer ? 1 : (0.95 + r.winRate*0.1));
   if(r.boostTimer > 0) s += r.boostPower;
   if(r.onRail) s += 60;
   if(r.slowTimer > 0) s -= 70;
 
-  // ★パイプの坂で増減（下り加速 / 上り減速）
+  // パイプ内は坂で変化（下り加速/上りでも止まらない）
   if(r.onPipe && r.pipeRef){
-    const t = r.pipeT; // 0..1
-    const slope = Math.cos(Math.PI * t); // 左(1)→中央(0)→右(-1)
-    // 前進固定なので「左→中央は下り」「中央→右は上り」
-    const delta = clamp(slope * 240, -160, 240);
-    s += 90 + delta;
+    const t = r.pipeT;
+    const slope = Math.cos(Math.PI * t); // 左(+)→中央0→右(-)
+    // 下り側加速 / 上り側は減速しすぎない
+    const delta = clamp(slope * 260, -90, 260);
+    s += 140 + delta;
+
+    // ★上り側でも最低速度を保証（登れない対策）
+    if(t > 0.55) s = Math.max(s, 170);
   }
 
-  return Math.max(40, s);
+  return Math.max(60, s);
 }
 
+/* ---------- physics ---------- */
 function updatePhysics(r, dt){
   const prevY = r.y;
 
+  // 前フレーム状態保存
+  r.wasOnPipe = r.onPipe;
+
+  // 重力
   r.vy += CONFIG.GRAVITY * dt;
   r.vy = Math.min(r.vy, CONFIG.MAX_FALL_V);
   r.y += r.vy * dt;
 
-  r.onPipe=false;
+  // いったん解除（ただし wasOnPipe で継続吸着可能）
+  r.onPipe = false;
 
-  // pipe -> rail -> ground
-  if(updatePipe(r, prevY)){}
-  else if(updateRail(r, prevY)){}
-  else{
+  // 優先：pipe -> rail -> ground
+  if(updatePipe(r, prevY)){
+    // onPipe or snapped to ground
+  }else if(updateRail(r, prevY)){
+    // rail
+  }else{
     if(r.y + r.h >= world.groundTop){
       r.y = world.groundTop - r.h;
       r.vy = 0;
-      r.onGround=true;
-      r.jumps=0;
+      r.onGround = true;
+      r.jumps = 0;
     }else{
-      r.onGround=false;
+      r.onGround = false;
     }
   }
 
-  // puddle slow
+  // 水たまり減速
   const cx = r.x + r.w*0.5;
   for(const p of world.puddles){
     if(cx > p.x && cx < p.x + p.w && r.onGround){
@@ -517,10 +642,10 @@ function updatePhysics(r, dt){
     }
   }
 
-  // rings: player only
+  // リング（プレイヤーのみ）
   if(r.isPlayer){
     for(let i=world.rings.length-1;i>=0;i--){
-      const ring=world.rings[i];
+      const ring = world.rings[i];
       if(cx > ring.x && cx < ring.x + ring.w){
         r.rings++;
         world.rings.splice(i,1);
@@ -529,30 +654,36 @@ function updatePhysics(r, dt){
     }
   }
 
-  if(r.boostTimer>0){
+  if(r.boostTimer > 0){
     r.boostTimer -= dt;
-    if(r.boostTimer<=0){
-      r.boostTimer=0;
-      r.boostPower=0;
+    if(r.boostTimer <= 0){
+      r.boostTimer = 0;
+      r.boostPower = 0;
     }
   }
-  if(r.slowTimer>0){
+  if(r.slowTimer > 0){
     r.slowTimer -= dt;
-    if(r.slowTimer<0) r.slowTimer=0;
+    if(r.slowTimer < 0) r.slowTimer = 0;
   }
 }
 
+/* ---------- AI ---------- */
 function aiLogic(r, dt){
   if(r.isPlayer || r.finished) return;
+
   r.aiCd -= dt;
-  if(r.aiCd>0) return;
+  if(r.aiCd > 0) return;
 
-  if((r.onGround||r.onRail||r.onPipe) && Math.random()<0.05) tryJump(r);
-  if(Math.random() < 0.03 + r.winRate*0.06) applyBoost(r, CONFIG.BOOST_ADD, CONFIG.BOOST_TIME);
-
-  r.aiCd = rand(0.25,0.6);
+  if((r.onGround||r.onRail||r.onPipe) && Math.random() < 0.05){
+    tryJump(r);
+  }
+  if(Math.random() < 0.03 + r.winRate*0.06){
+    applyBoost(r, CONFIG.BOOST_ADD, CONFIG.BOOST_TIME);
+  }
+  r.aiCd = rand(0.25, 0.6);
 }
 
+/* ---------- update run ---------- */
 function updateRun(dt){
   regenStock(dt);
 
@@ -579,28 +710,30 @@ function updateRun(dt){
     r.x += speedOf(r) * dt;
 
     if(!r.finished && r.x >= world.goalX){
-      r.finished=true;
-      r.finishTime=state.time;
+      r.finished = true;
+      r.finishTime = state.time;
       state.finishedCount++;
     }
   }
 
   updateRank();
-  state.cameraX = p.x - CONFIG.LOGICAL_W*0.18;
+  updateFixedHud();
+
+  state.cameraX = p.x - CONFIG.LOGICAL_W * 0.18;
   state.time += dt;
 
-  // survive数に到達したら result 停止（次へボタン待ち）
   const race = CONFIG.RACES[state.raceIndex];
   if(state.finishedCount >= race.survive){
-    state.phase="result";
-    if(btnNext) btnNext.style.display="block";
+    state.phase = "result";
+    if(btnNext) btnNext.style.display = "block";
   }
 }
 
 /* === PART4 START === */
- // game.js PART 4 / 5  (FIXED2)
-// RENDER / HUD / MINIMAP / RESULT (FIT ALL)
+ // game.js PART 4 / 5  (FIXED3)
+// RENDER / HUD / MINIMAP / RESULT (VISIBLE & FIT)
 
+/* ---------- draw base ---------- */
 function beginDraw(){
   const cw=canvas.width, ch=canvas.height;
   const sx=cw/CONFIG.LOGICAL_W;
@@ -612,6 +745,7 @@ function beginDraw(){
   ctx.imageSmoothingEnabled=false;
 }
 
+/* ---------- background ---------- */
 function drawSky(){
   const g=ctx.createLinearGradient(0,0,0,CONFIG.LOGICAL_H);
   g.addColorStop(0,"#2a6ccf");
@@ -637,7 +771,9 @@ function drawStage(){
   }
 }
 
+/* ---------- world objects ---------- */
 function drawObjects(){
+  // puddle
   ctx.fillStyle="rgba(120,190,255,0.55)";
   for(const p of world.puddles){
     const sx=p.x-state.cameraX;
@@ -645,6 +781,7 @@ function drawObjects(){
     ctx.fillRect(sx,p.y,p.w,p.h);
   }
 
+  // rings
   const ring=IMAGES.ring;
   for(const r of world.rings){
     const sx=r.x-state.cameraX;
@@ -652,12 +789,14 @@ function drawObjects(){
     ring && ctx.drawImage(ring,sx,r.y,r.w,r.h);
   }
 
+  // pipes
   for(const p of world.pipes){
     const sx=p.x-state.cameraX;
     if(sx<-300||sx>CONFIG.LOGICAL_W+300) continue;
     ctx.drawImage(p.img,sx,p.y,p.w,p.h);
   }
 
+  // rails
   const rail=IMAGES.rail;
   for(const r of world.rails){
     const sx=r.x-state.cameraX;
@@ -666,6 +805,7 @@ function drawObjects(){
   }
 }
 
+/* ---------- runner ---------- */
 function drawRunner(r){
   let sx;
   if(r.isPlayer){
@@ -676,18 +816,22 @@ function drawRunner(r){
   }
   if(sx<-120||sx>CONFIG.LOGICAL_W+120) return;
 
+  // shadow
   ctx.fillStyle="rgba(0,0,0,0.25)";
   ctx.beginPath();
   ctx.ellipse(sx+r.w/2,world.groundTop+6,r.w*0.35,6,0,0,Math.PI*2);
   ctx.fill();
 
+  // board
   const board=IMAGES.board;
   board && ctx.drawImage(board, sx-r.w*0.05, r.y+r.h*0.65, r.w*1.1, r.h*0.45);
 
+  // body
   const body=(r.onGround||r.onRail||r.onPipe)?IMAGES.pl1:IMAGES.pl2;
   body && ctx.drawImage(body, sx, r.y, r.w, r.h);
 }
 
+/* ---------- minimap ---------- */
 function drawMinimap(){
   const mapW=220, mapH=6;
   const x=(CONFIG.LOGICAL_W-mapW)/2;
@@ -704,21 +848,16 @@ function drawMinimap(){
   }
 }
 
+/* ---------- HUD ---------- */
 function drawHUD(){
   const p=state.runners[state.playerIndex];
-  hudSpeed.textContent = Math.floor(speedOf(p));
-  hudDist.textContent  = Math.floor(p.x/CONFIG.PX_PER_M);
-
-  ctx.fillStyle="rgba(255,255,255,0.95)";
-  ctx.font="12px system-ui";
-  ctx.fillText(state.rankText, CONFIG.LOGICAL_W-92, 22);
-  ctx.fillText(`RING ${p.rings}/${CONFIG.RING_NEED}`, 10, 22);
-  ctx.fillText(`RACE ${CONFIG.RACES[state.raceIndex].name}`, 10, 38);
-  ctx.fillText(VERSION, 10, CONFIG.LOGICAL_H-10);
+  if(hudSpeed) hudSpeed.textContent = Math.floor(speedOf(p));
+  if(hudDist)  hudDist.textContent  = Math.floor(p.x/CONFIG.PX_PER_M);
 
   drawMinimap();
 }
 
+/* ---------- result ---------- */
 function drawResult(){
   ctx.fillStyle="rgba(0,0,0,0.78)";
   ctx.fillRect(0,0,CONFIG.LOGICAL_W,CONFIG.LOGICAL_H);
@@ -729,29 +868,27 @@ function drawResult(){
 
   const list=[...state.runners].sort((a,b)=>a.finishTime-b.finishTime);
 
-  // ★2カラムで全員入れる（スマホでも切れない）
-  const colW = (CONFIG.LOGICAL_W - 24) / 2;
-  const startY = 48;
-  const rowH = 14;
+  const colW=(CONFIG.LOGICAL_W-24)/2;
+  const startY=48;
+  const rowH=14;
   ctx.font="12px system-ui";
 
   for(let i=0;i<list.length;i++){
-    const col = (i < 18) ? 0 : 1;
-    const row = (i < 18) ? i : (i - 18);
-    const x = 12 + colW*col;
-    const y = startY + rowH*row;
+    const col=i<18?0:1;
+    const row=i<18?i:i-18;
+    const x=12+colW*col;
+    const y=startY+rowH*row;
 
     const r=list[i];
     const t=isFinite(r.finishTime)?r.finishTime.toFixed(2):"--";
-    const name=r.name;
-    if(r.isPlayer) ctx.fillStyle="#00ffcc";
-    else ctx.fillStyle="#ffffff";
-    ctx.fillText(`${i+1}. ${name} ${t}`, x, y);
+    ctx.fillStyle=r.isPlayer?"#00ffcc":"#ffffff";
+    ctx.fillText(`${i+1}. ${r.name} ${t}`, x, y);
   }
 
   if(btnNext) btnNext.style.display="block";
 }
 
+/* ---------- render ---------- */
 function render(){
   ctx.setTransform(1,0,0,1,0,0);
   ctx.fillStyle="#000";
@@ -785,56 +922,59 @@ function render(){
 }
 
 /* === PART5 START === */
- // game.js PART 5 / 5  (FIXED2)
-// LOOP / NEXT BUTTON / BOOT
+ // game.js PART 5 / 5  (FIXED3)
+// LOOP / NEXT RACE / BOOT
 
 function update(dt){
-  if(state.phase==="countdown"){
+  if(state.phase === "countdown"){
     updateCountdown(dt);
+    updateFixedHud(); // ★カウント中もHUD更新
     return;
   }
-  if(state.phase==="run"){
+  if(state.phase === "run"){
     updateRun(dt);
     return;
   }
-  // result: wait user press
+  // result中は停止（次ボタン待ち）
 }
 
 function loop(t){
-  const dt = Math.min((t - state.lastTime)/1000, 0.033);
+  const dt = Math.min((t - state.lastTime) / 1000, 0.033);
   state.lastTime = t;
 
-  if(state.phase!=="loading") update(dt);
+  if(state.phase !== "loading"){
+    update(dt);
+  }
   render();
-
   requestAnimationFrame(loop);
 }
 
+/* ---------- next race ---------- */
 btnNext && btnNext.addEventListener("pointerdown", ()=>{
-  btnNext.style.display="none";
+  btnNext.style.display = "none";
 
   if(state.raceIndex < CONFIG.RACES.length - 1){
     initRace(state.raceIndex + 1);
-    resetGround();
-    setGoal();
-    state.phase="countdown";
   }else{
-    // 全レース終了 → 最初へ
-    initRace(0);
-    resetGround();
-    setGoal();
-    state.phase="countdown";
+    initRace(0); // 全レース終了 → 最初から
   }
+  resetGround();
+  setGoal();
+  updateRank();
+  updateFixedHud();
+  state.phase = "countdown";
 });
 
+/* ---------- boot ---------- */
 async function boot(){
   try{
     await bootCore();
     initRace(0);
     resetGround();
     setGoal();
-    updateRank(); // countdown中も表示
-    state.phase="countdown";
+    updateRank();
+    updateFixedHud();
+    state.phase = "countdown";
     state.lastTime = performance.now();
     requestAnimationFrame(loop);
   }catch(e){
