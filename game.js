@@ -1,5 +1,5 @@
 // game.js  (FULL)  MOB STREET - 1P RUN
-// VERSION: v6.6.2-no-snap-cleanup-fix (FULL)
+// VERSION: v6.6.3-rail-drawfix (FULL)
 // Fix / Improve (based on your feedback):
 // - Platform "snap"/吸い付き防止: dan / track(or) / halfpipe は「上から着地した時だけ乗る」
 // - Jump中(vy<0)は絶対に platform enter しない（横当たりも乗らない）
@@ -13,7 +13,7 @@
 (() => {
 "use strict";
 
-const VERSION = "v6.6.2-no-snap-cleanup-fix";
+const VERSION = "v6.6.3-rail-drawfix";
 
 /* =======================
    DOM
@@ -663,7 +663,7 @@ function addRail(x){
 
   const h = Math.floor(world.groundH * 0.58);
   const scale = h / img.height;
-  const w = Math.floor(img.width * scale * 1.35);
+  const w = Math.floor(img.width * scale * 2.20);
 
   world.rails.push({ x, y: world.groundY - h, w, h });
 }
@@ -1210,7 +1210,7 @@ function drawObjects(){
   if(IMAGES.dan){
     for(const d of world.dans){
       const sx = d.x - state.cameraX;
-      if(sx < -260 || sx > CONFIG.LOGICAL_W + 260) continue;
+      if((sx + d.w) < -260 || sx > CONFIG.LOGICAL_W + 260) continue;
       ctx.drawImage(d.img, sx, d.y, d.w, d.h);
     }
   }
@@ -1219,7 +1219,7 @@ function drawObjects(){
   if(IMAGES.or){
     for(const o of world.ors){
       const sx = o.x - state.cameraX;
-      if(sx < -220 || sx > CONFIG.LOGICAL_W + 220) continue;
+      if((sx + o.w) < -220 || sx > CONFIG.LOGICAL_W + 220) continue;
       ctx.drawImage(o.img, sx, o.y, o.w, o.h);
     }
   }
@@ -1227,7 +1227,8 @@ function drawObjects(){
   // pipes
   for(const p of world.pipes){
     const sx = p.x - state.cameraX;
-    if(sx < -260 || sx > CONFIG.LOGICAL_W + 260) continue;
+    const m = 260;
+    if((sx + p.w) < -m || sx > CONFIG.LOGICAL_W + m) continue;
     ctx.drawImage(p.img, sx, p.y, p.w, p.h);
   }
 
@@ -1235,7 +1236,8 @@ function drawObjects(){
   if(IMAGES.rail){
     for(const r of world.rails){
       const sx = r.x - state.cameraX;
-      if(sx < -200 || sx > CONFIG.LOGICAL_W + 200) continue;
+      const m = 240;
+      if((sx + r.w) < -m || sx > CONFIG.LOGICAL_W + m) continue;
       ctx.drawImage(IMAGES.rail, sx, r.y, r.w, r.h);
     }
   }
