@@ -1,17 +1,19 @@
 // game.js  (FULL)  MOB STREET - 1P RUN
-// VERSION: v6.6.2-track-pipe-dan-full (FULL)
-// Fix / Improve:
-// - FIX iOS error: CONFIG.RACES[idx] undefined (idx clamp + safe defaults)
-// - or.png = "TRACK" : bigger + stronger accel, treated like ガードレール系（必ず乗れる／弾かれない）
-// - Halfpipe: 絵に沿う「左→底→右」プロファイルで追従 + 乗ってる間の加速強化 + 地面走行からも自然に乗る
-// - dan: 乗ってる途中で消えない（削除は画面外 + 誰も参照してない時のみ）
-// - オブジェ削除は「画面から見えなくなってから」＆「誰も乗ってない時」だけ
-// - 既存: cover + bottom-align / version badge / top8 / result modal / ring / puddle / stocks
+// VERSION: v6.6.2-no-snap-cleanup-fix (FULL)
+// Fix / Improve (based on your feedback):
+// - Platform "snap"/吸い付き防止: dan / track(or) / halfpipe は「上から着地した時だけ乗る」
+// - Jump中(vy<0)は絶対に platform enter しない（横当たりも乗らない）
+// - Jump開始時は onPipe/onDan/onOr を解除（乗り状態から自然に離れる）
+// - dan / pipe / track: 乗っている間は絵（プロファイル）に沿って追従 + 加速
+// - cleanup: オブジェ削除は「完全に画面外（左）+ margin」かつ「誰も参照していない」時だけ
+// - 既存仕様維持: cover+bottom-align / version badge / top8 / result modal / ring / puddle / stocks
+//
+// NOTE: HTML/CSSは変更しません（既存のID/構造を前提）。
 
 (() => {
 "use strict";
 
-const VERSION = "v6.6.2-track-pipe-dan-full";
+const VERSION = "v6.6.2-no-snap-cleanup-fix";
 
 /* =======================
    DOM
@@ -74,7 +76,12 @@ const CONFIG = {
   // AI boost
   AI_BOOST_COOLDOWN: 5.0,
 
-  // Spawn tuning (控えめ)
+  // Platform landing snap settings (吸い付き防止用)
+  LAND_EPS: 2,         // "上から着地" 判定の許容
+  LAND_SNAP: 10,       // 上面に近い時だけ吸着（ワープ感抑制）
+  MIN_STAY_MARGIN: 6,  // platform滞在判定の余裕
+
+  // Spawn tuning（控えめ）
   SPAWN: {
     RAIL_MIN: 440,
     RAIL_MAX: 780,
@@ -97,19 +104,24 @@ const CONFIG = {
     NO_OVERLAP_X: 280
   },
 
-  // Halfpipe profile
+  // Halfpipe profile: left -> bottom -> right
   PIPE_PROFILE: {
-    // left slope ratio, bottom flat ratio = remainder is right
     LEFT: 0.28,
     FLAT: 0.18,
-    DEPTH_RATIO: 0.92,       // how deep the bowl goes (as % of pipe height)
-    // accel
-    BASE_ON_PIPE_ADD: 120,   // constant accel while on pipe
-    SLOPE_ADD: 280           // additional accel based on slope
+    // RIGHT = 1 - (LEFT+FLAT)
+    DEPTH_RATIO: 0.92,
+    BASE_ON_PIPE_ADD: 110, // constant accel while on pipe
+    SLOPE_ADD: 240         // additional accel on slopes
   },
 
   // Track accel
-  TRACK_ACCEL_ADD: 200, // stronger
+  TRACK_ACCEL_ADD: 190,
+
+  // dan accel
+  DAN_ACCEL_ADD: 95,
+
+  // Cleanup margins (visual safety)
+  CLEANUP_MARGIN: 140,
 
   RACES: [
     { name:"EASY",   goal:  600, start:26, survive:16 },
@@ -465,7 +477,6 @@ const LETTERS = "ABCDEFGHIJKLMNOPQRST".split("");
 
 function resetRunner(r){
   r.x=0; r.y=0; r.vy=0;
-
   r.onGround=true;
 
   r.onPipe=false; r.pipeRef=null;
@@ -517,10 +528,8 @@ function initRace(idx){
   resetWorldForRace();
   resetGround();
 
-  // 初期スポーン
   spawnWorld(0);
 
-  // 地面に置く
   for(const r of state.runners){
     r.x = 0;
     r.y = world.groundY - r.h;
@@ -639,8 +648,6 @@ function spawnWorld(camX){
     if(!isTooClose(x)) addDan(x);
     world.nextDanX += rand(CONFIG.SPAWN.DAN_MIN, CONFIG.SPAWN.DAN_MAX);
   }
-
-  // リングは頻度高め
   if(edge > world.nextRingX){
     addRing(world.nextRingX);
     world.nextRingX += rand(CONFIG.SPAWN.RING_MIN, CONFIG.SPAWN.RING_MAX);
@@ -654,7 +661,6 @@ function addRail(x){
   const img = IMAGES.rail;
   if(!img) return;
 
-  // ガードレール：短すぎ対策で横を長く
   const h = Math.floor(world.groundH * 0.58);
   const scale = h / img.height;
   const w = Math.floor(img.width * scale * 1.35);
@@ -666,7 +672,6 @@ function addPipe(x){
   const img = Math.random() < 0.5 ? IMAGES.hpr : IMAGES.hpg;
   if(!img) return;
 
-  // ★小さすぎ対策：高さも横も上げる
   const h = Math.floor(world.groundH * 0.80);
   const scale = h / img.height;
   const w = Math.floor(img.width * scale * 1.65);
@@ -699,7 +704,6 @@ function addOr(x){
   const img = IMAGES.or;
   if(!img) return;
 
-  // ★トラックはもっと大きく（特に横）
   const h = Math.floor(world.groundH * 0.78);
   const scale = h / img.height;
   const w = Math.floor(img.width * scale * 1.55);
@@ -725,26 +729,36 @@ function addDan(x){
 /* =======================
    CLEANUP (offscreen only + not referenced)
 ======================= */
-function anyRunnerRef(obj, key){
+function anyRunnerRef(obj){
   for(const r of state.runners){
-    if(r[key] === obj) return true;
+    if(r.pipeRef === obj) return true;
+    if(r.danRef  === obj) return true;
+    if(r.orRef   === obj) return true;
   }
   return false;
 }
+function cleanupArray(arr){
+  const leftLimit = state.cameraX - CONFIG.CLEANUP_MARGIN;
+  return arr.filter(o => {
+    const offLeft = (o.x + o.w) < leftLimit;
+    if(!offLeft) return true;
+    // offscreen left: keep if any runner is still referencing it
+    return anyRunnerRef(o);
+  });
+}
 function cleanupWorld(){
-  const left = state.cameraX - 520; // 画面外＋余裕
+  // rails are never referenced; only offscreen cleanup
+  const leftLimit = state.cameraX - CONFIG.CLEANUP_MARGIN;
+  world.rails = world.rails.filter(o => (o.x + o.w) >= leftLimit);
 
-  // railsは参照を持たないので、画面外だけ削除
-  world.rails = world.rails.filter(o => (o.x + o.w) >= left);
+  // referenced platforms
+  world.pipes = cleanupArray(world.pipes);
+  world.dans  = cleanupArray(world.dans);
+  world.ors   = cleanupArray(world.ors);
 
-  // pipes/dans/orsは「誰かが乗ってる(参照中)」なら画面外でも残す
-  world.pipes = world.pipes.filter(o => (o.x + o.w) >= left || anyRunnerRef(o, "pipeRef"));
-  world.dans  = world.dans .filter(o => (o.x + o.w) >= left || anyRunnerRef(o, "danRef"));
-  world.ors   = world.ors  .filter(o => (o.x + o.w) >= left || anyRunnerRef(o, "orRef"));
-
-  // puddles / rings は画面外で削除（軽い）
-  world.puddles = world.puddles.filter(p => (p.x + p.w) >= left);
-  world.rings   = world.rings.filter(r => (r.x + 40) >= left);
+  // simple objects
+  world.puddles = world.puddles.filter(p => (p.x + p.w) >= leftLimit);
+  world.rings   = world.rings.filter(r => (r.x + 40) >= leftLimit);
 }
 
 /* =======================
@@ -758,7 +772,15 @@ function rectHit(ax,ay,aw,ah,bx,by,bw,bh){
 /* =======================
    ACTIONS
 ======================= */
+function clearPlatforms(r){
+  r.onPipe = false; r.pipeRef = null;
+  r.onDan  = false; r.danRef  = null;
+  r.onOr   = false; r.orRef   = null;
+}
 function doJump(r){
+  // ジャンプ開始＝platformから離れる（吸い付き防止の肝）
+  clearPlatforms(r);
+
   if(r.onGround){
     r.vy = -CONFIG.JUMP_V1;
     r.onGround = false;
@@ -768,47 +790,100 @@ function doJump(r){
     r.jumps = 2;
   }
 }
+
 function startBoost(r, power, time){
   r.boostPower = power;
   r.boostTimer = time;
 }
 
 /* =======================
-   PIPE PROFILE (left -> flat -> right)
-   returns {yTop, slopeAbs01}
+   PLATFORM TOP Y
 ======================= */
-function pipeProfile(pipe, runner){
-  const cx = runner.x + runner.w * 0.5;
-  const t = clamp((cx - pipe.x) / pipe.w, 0, 1);
+function danTopY(dan, xCenter){
+  const t = clamp((xCenter - dan.x) / dan.w, 0, 1);
+  const sw = (dan.slopeW / dan.w);
+
+  if(t < sw){
+    const tt = t / sw;
+    return (world.groundY - (dan.h * tt));
+  }else if(t > (1 - sw)){
+    const tt = (t - (1 - sw)) / sw;
+    return (world.groundY - (dan.h * (1 - tt)));
+  }
+  return dan.y;
+}
+
+function pipeTopY(pipe, xCenter){
+  const t = clamp((xCenter - pipe.x) / pipe.w, 0, 1);
 
   const L = CONFIG.PIPE_PROFILE.LEFT;
   const F = CONFIG.PIPE_PROFILE.FLAT;
-  const R = Math.max(0.0001, 1 - (L + F));
+  const R = 1 - (L + F);
 
   const depth = pipe.h * CONFIG.PIPE_PROFILE.DEPTH_RATIO;
   const topY  = pipe.y;
   const bottomY = pipe.y + depth;
 
   let y;
-  let slopeAbs01;
+  let slopeAbs01 = 0;
 
   if(t < L){
-    const tt = t / Math.max(0.0001, L);
+    const tt = t / L;
     y = topY + (bottomY - topY) * tt;
-    // 左→底：傾斜強め
-    slopeAbs01 = 1.0;
+    slopeAbs01 = 1;
   }else if(t < L + F){
     y = bottomY;
-    slopeAbs01 = 0.0;
+    slopeAbs01 = 0;
   }else{
     const tt = (t - (L + F)) / R;
     y = bottomY + (topY - bottomY) * tt;
-    // 底→右：傾斜強め
-    slopeAbs01 = 1.0;
+    slopeAbs01 = 1;
   }
 
   y = clamp(y, topY, bottomY);
   return { yTop: y, slopeAbs01 };
+}
+
+/* =======================
+   LANDING TEST (上から着地のみ)
+======================= */
+function tryLandOnPlatform(r, idx, plat, topY, kind){
+  // kind: "rail"|"or"|"dan"|"pipe"
+  // 禁止: ジャンプ上昇中
+  if(r.vy < 0) return false;
+
+  const prevBottom = r.prevY + r.h;
+  const curBottom  = r.y + r.h;
+
+  // "上から"：前フレームの足元が上面より上にある
+  if(prevBottom > topY + CONFIG.LAND_EPS) return false;
+
+  // 今フレームで上面を跨いだ（または近い）
+  const near = Math.abs(curBottom - topY) <= CONFIG.LAND_SNAP;
+  const crossed = curBottom >= (topY - CONFIG.LAND_EPS);
+  if(!(near || crossed)) return false;
+
+  // 着地
+  r.y = topY - r.h;
+  r.vy = 0;
+  r.onGround = true;
+  r.jumps = 0;
+
+  if(kind === "rail"){
+    // 乗ると少し加速
+    r.boostPower = Math.max(r.boostPower, 60);
+    r.boostTimer = Math.max(r.boostTimer, 0.15);
+  }else if(kind === "or"){
+    r.onOr = true;
+    r.orRef = plat;
+  }else if(kind === "dan"){
+    r.onDan = true;
+    r.danRef = plat;
+  }else if(kind === "pipe"){
+    r.onPipe = true;
+    r.pipeRef = plat;
+  }
+  return true;
 }
 
 /* =======================
@@ -833,6 +908,9 @@ function updateRun(dt){
   for(let idx=0; idx<state.runners.length; idx++){
     const r = state.runners[idx];
     if(r.finished) continue;
+
+    // cache prev y for landing test
+    r.prevY = r.y;
 
     /* --- AI --- */
     if(!r.isPlayer){
@@ -875,83 +953,20 @@ function updateRun(dt){
       speed *= 0.75;
     }
 
-    // Track accel
-    if(r.onOr) speed += CONFIG.TRACK_ACCEL_ADD;
+    // platform accel (while riding)
+    if(r.onOr)  speed += CONFIG.TRACK_ACCEL_ADD;
+    if(r.onDan) speed += CONFIG.DAN_ACCEL_ADD;
 
-    // dan accel
-    if(r.onDan) speed += 95;
+    // halfpipe accel is computed during follow
+    let addPipeAccel = 0;
 
-    /* --- PLATFORM FOLLOW FIRST (pipe/dan/or keeps y fixed) --- */
+    /* --- PLATFORM FOLLOW (only while still inside range) --- */
+    const cx = r.x + r.w*0.5;
 
-    // PIPE follow
-    if(r.onPipe && r.pipeRef){
-      const pipe = r.pipeRef;
-      const cx = r.x + r.w * 0.5;
-
-      if(cx >= pipe.x + pipe.w){
-        r.onPipe = false;
-        r.pipeRef = null;
-        r.y = world.groundY - r.h;
-        r.vy = 0;
-        r.onGround = true;
-        r.jumps = 0;
-      }else{
-        const pf = pipeProfile(pipe, r);
-        r.y = pf.yTop - r.h;
-        r.vy = 0;
-        r.onGround = true;
-        r.jumps = 0;
-
-        // accel while on pipe
-        speed += CONFIG.PIPE_PROFILE.BASE_ON_PIPE_ADD;
-        speed += pf.slopeAbs01 * CONFIG.PIPE_PROFILE.SLOPE_ADD;
-      }
-    }
-
-    // DAN follow
-    if(r.onDan && r.danRef){
-      const d = r.danRef;
-      const cx = r.x + r.w * 0.5;
-
-      if(cx >= d.x + d.w){
-        r.onDan = false;
-        r.danRef = null;
-        r.y = world.groundY - r.h;
-        r.vy = 0;
-        r.onGround = true;
-      }else{
-        const t = clamp((cx - d.x) / d.w, 0, 1);
-        let topY = d.y;
-
-        const sw = (d.slopeW / d.w);
-        if(t < sw){
-          const tt = t / Math.max(0.0001, sw);
-          topY = (world.groundY - (d.h * tt));
-        }else if(t > (1 - sw)){
-          const tt = (t - (1 - sw)) / Math.max(0.0001, sw);
-          topY = (world.groundY - (d.h * (1 - tt)));
-        }else{
-          topY = d.y;
-        }
-
-        r.y = topY - r.h;
-        r.vy = 0;
-        r.onGround = true;
-        r.jumps = 0;
-      }
-    }
-
-    // OR (TRACK) follow
     if(r.onOr && r.orRef){
       const o = r.orRef;
-      const cx = r.x + r.w * 0.5;
-
-      if(cx >= o.x + o.w){
-        r.onOr = false;
-        r.orRef = null;
-        r.y = world.groundY - r.h;
-        r.vy = 0;
-        r.onGround = true;
+      if(cx < o.x - CONFIG.MIN_STAY_MARGIN || cx > o.x + o.w + CONFIG.MIN_STAY_MARGIN){
+        r.onOr = false; r.orRef = null;
       }else{
         r.y = o.y - r.h;
         r.vy = 0;
@@ -960,7 +975,38 @@ function updateRun(dt){
       }
     }
 
-    /* --- GRAVITY (only if not on any platform) --- */
+    if(r.onDan && r.danRef){
+      const d = r.danRef;
+      if(cx < d.x - CONFIG.MIN_STAY_MARGIN || cx > d.x + d.w + CONFIG.MIN_STAY_MARGIN){
+        r.onDan = false; r.danRef = null;
+      }else{
+        const topY = danTopY(d, cx);
+        r.y = topY - r.h;
+        r.vy = 0;
+        r.onGround = true;
+        r.jumps = 0;
+      }
+    }
+
+    if(r.onPipe && r.pipeRef){
+      const p = r.pipeRef;
+      if(cx < p.x - CONFIG.MIN_STAY_MARGIN || cx > p.x + p.w + CONFIG.MIN_STAY_MARGIN){
+        r.onPipe = false; r.pipeRef = null;
+      }else{
+        const pf = pipeTopY(p, cx);
+        r.y = pf.yTop - r.h;
+        r.vy = 0;
+        r.onGround = true;
+        r.jumps = 0;
+
+        addPipeAccel = CONFIG.PIPE_PROFILE.BASE_ON_PIPE_ADD + pf.slopeAbs01 * CONFIG.PIPE_PROFILE.SLOPE_ADD;
+      }
+    }
+
+    // Apply pipe accel after follow update
+    speed += addPipeAccel;
+
+    /* --- GRAVITY (only if not riding any platform) --- */
     if(!r.onPipe && !r.onDan && !r.onOr){
       r.vy += CONFIG.GRAVITY * dt;
       r.vy = Math.min(r.vy, CONFIG.MAX_FALL_V);
@@ -982,84 +1028,39 @@ function updateRun(dt){
       }
     }
 
-    /* --- RAIL (上から着地のみ) --- */
+    /* --- PLATFORM LANDING (上から着地のみ) --- */
+    // Only try landing if not already riding (prevents snap after follow)
     if(!r.onPipe && !r.onDan && !r.onOr){
+      // RAIL
       for(const rail of world.rails){
         if(rectHit(r.x, r.y, r.w, r.h, rail.x, rail.y, rail.w, rail.h)){
-          if(r.vy >= 0 && (r.y + r.h - r.vy * dt) <= rail.y + 2){
-            r.y = rail.y - r.h;
-            r.vy = 0;
-            r.onGround = true;
-            r.jumps = 0;
-
-            // 乗ると少し加速
-            r.boostPower = Math.max(r.boostPower, 70);
-            r.boostTimer = Math.max(r.boostTimer, 0.16);
+          if(tryLandOnPlatform(r, idx, rail, rail.y, "rail")) break;
+        }
+      }
+      // TRACK (or)
+      if(!r.onOr){
+        for(const o of world.ors){
+          if(rectHit(r.x, r.y, r.w, r.h, o.x, o.y, o.w, o.h)){
+            if(tryLandOnPlatform(r, idx, o, o.y, "or")) break;
           }
         }
       }
-    }
-
-    /* --- PIPE ENTER (地面走行からも自然に乗る + 上から着地もOK) --- */
-    if(!r.onPipe && !r.onDan && !r.onOr){
-      for(const pipe of world.pipes){
-        const cx = r.x + r.w * 0.5;
-        if(cx >= pipe.x && cx <= pipe.x + pipe.w){
-          // 1) 上から着地
-          if(rectHit(r.x, r.y, r.w, r.h, pipe.x, pipe.y, pipe.w, pipe.h)){
-            const prevBottom = (r.y + r.h - r.vy * dt);
-            const landing = (r.vy >= 0 && prevBottom <= pipe.y + 2);
-            if(landing){
-              r.onPipe = true;
-              r.pipeRef = pipe;
-              r.vy = 0;
-              r.onGround = true;
-              r.jumps = 0;
-              break;
-            }
-          }
-          // 2) 地面走行で「左リムに入った」時（弾かれないよう吸着）
-          // 地面付近ならパイプに吸い込ませる
-          const nearGround = (r.y + r.h) >= (world.groundY - 4);
-          if(nearGround){
-            r.onPipe = true;
-            r.pipeRef = pipe;
-            r.vy = 0;
-            r.onGround = true;
-            r.jumps = 0;
-            break;
+      // DAN (sloped top)
+      if(!r.onDan){
+        for(const d of world.dans){
+          if(rectHit(r.x, r.y, r.w, r.h, d.x, d.y, d.w, d.h)){
+            const topY = danTopY(d, r.x + r.w*0.5);
+            if(tryLandOnPlatform(r, idx, d, topY, "dan")) break;
           }
         }
       }
-    }
-
-    /* --- DAN ENTER (必ず乗れる) --- */
-    if(!r.onPipe && !r.onDan && !r.onOr){
-      for(const d of world.dans){
-        const cx = r.x + r.w*0.5;
-        if(cx >= d.x && cx <= d.x + d.w){
-          r.onDan = true;
-          r.danRef = d;
-          r.onGround = true;
-          r.vy = 0;
-          r.jumps = 0;
-          break;
-        }
-      }
-    }
-
-    /* --- OR ENTER (TRACK: 必ず乗れる / 弾かれない) --- */
-    if(!r.onPipe && !r.onDan && !r.onOr){
-      for(const o of world.ors){
-        const cx = r.x + r.w*0.5;
-        if(cx >= o.x && cx <= o.x + o.w){
-          // 走行でも着地でも必ず乗る
-          r.onOr = true;
-          r.orRef = o;
-          r.onGround = true;
-          r.vy = 0;
-          r.jumps = 0;
-          break;
+      // PIPE (profile top)
+      if(!r.onPipe){
+        for(const p of world.pipes){
+          if(rectHit(r.x, r.y, r.w, r.h, p.x, p.y, p.w, p.h)){
+            const pf = pipeTopY(p, r.x + r.w*0.5);
+            if(tryLandOnPlatform(r, idx, p, pf.yTop, "pipe")) break;
+          }
         }
       }
     }
@@ -1071,7 +1072,7 @@ function updateRun(dt){
       }
     }
 
-    /* --- RING (ランナー別取得) --- */
+    /* --- RING (runner-specific) --- */
     for(const ring of world.rings){
       if(ring.takenBy.has(idx)) continue;
 
@@ -1101,7 +1102,7 @@ function updateRun(dt){
   updateTop8();
   updateStockBar();
 
-  // survive到達でリザルト
+  // survive threshold => result
   if(state.finishedCount >= race.survive){
     showResult();
   }
@@ -1132,7 +1133,6 @@ function update(dt){
     updateRun(dt);
     return;
   }
-  // result: stop simulation
 }
 
 /* =======================
@@ -1194,7 +1194,7 @@ function drawObjects(){
     ctx.fillRect(sx, p.y, p.w, p.h);
   }
 
-  // ring (player taken hidden)
+  // rings (player taken -> hidden)
   const ringImg = IMAGES.ring;
   if(ringImg){
     const pi = state.playerIndex;
@@ -1207,8 +1207,7 @@ function drawObjects(){
   }
 
   // dan
-  const danImg = IMAGES.dan;
-  if(danImg){
+  if(IMAGES.dan){
     for(const d of world.dans){
       const sx = d.x - state.cameraX;
       if(sx < -260 || sx > CONFIG.LOGICAL_W + 260) continue;
@@ -1216,30 +1215,28 @@ function drawObjects(){
     }
   }
 
-  // track (or)
-  const orImg = IMAGES.or;
-  if(orImg){
+  // track(or)
+  if(IMAGES.or){
     for(const o of world.ors){
       const sx = o.x - state.cameraX;
-      if(sx < -260 || sx > CONFIG.LOGICAL_W + 260) continue;
+      if(sx < -220 || sx > CONFIG.LOGICAL_W + 220) continue;
       ctx.drawImage(o.img, sx, o.y, o.w, o.h);
     }
   }
 
-  // halfpipe
+  // pipes
   for(const p of world.pipes){
     const sx = p.x - state.cameraX;
     if(sx < -260 || sx > CONFIG.LOGICAL_W + 260) continue;
     ctx.drawImage(p.img, sx, p.y, p.w, p.h);
   }
 
-  // rail
-  const railImg = IMAGES.rail;
-  if(railImg){
+  // rails
+  if(IMAGES.rail){
     for(const r of world.rails){
       const sx = r.x - state.cameraX;
-      if(sx < -220 || sx > CONFIG.LOGICAL_W + 220) continue;
-      ctx.drawImage(railImg, sx, r.y, r.w, r.h);
+      if(sx < -200 || sx > CONFIG.LOGICAL_W + 200) continue;
+      ctx.drawImage(IMAGES.rail, sx, r.y, r.w, r.h);
     }
   }
 }
@@ -1252,7 +1249,7 @@ function screenXOf(r){
 
 function drawRunner(r){
   const sx = screenXOf(r);
-  if(sx < -140 || sx > CONFIG.LOGICAL_W + 140) return;
+  if(sx < -120 || sx > CONFIG.LOGICAL_W + 120) return;
 
   // shadow
   ctx.fillStyle = "rgba(0,0,0,0.25)";
@@ -1261,9 +1258,8 @@ function drawRunner(r){
   ctx.fill();
 
   // board
-  const board = IMAGES.board;
-  if(board){
-    ctx.drawImage(board, sx - r.w*0.05, r.y + r.h*0.65, r.w*1.1, r.h*0.45);
+  if(IMAGES.board){
+    ctx.drawImage(IMAGES.board, sx - r.w*0.05, r.y + r.h*0.65, r.w*1.1, r.h*0.45);
   }
 
   // body
@@ -1272,7 +1268,7 @@ function drawRunner(r){
     ctx.drawImage(body, sx, r.y, r.w, r.h);
   }
 
-  // label
+  // player label
   if(r.isPlayer){
     ctx.font = "10px system-ui";
     ctx.textAlign = "center";
@@ -1301,7 +1297,7 @@ function render(){
   drawStage();
   drawObjects();
 
-  // キャラ（名前持ち→プレイヤー）
+  // named ghosts -> player
   for(const r of state.runners){
     if(!r.isPlayer && r.winRate > 0.30) drawRunner(r);
   }
@@ -1355,7 +1351,7 @@ rmRetry?.addEventListener("pointerdown", ()=>{
 });
 rmNext?.addEventListener("pointerdown", ()=>{
   hideResult();
-  const nextIdx = (safeRaceIndex(state.raceIndex) < CONFIG.RACES.length - 1) ? (safeRaceIndex(state.raceIndex) + 1) : 0;
+  const nextIdx = (state.raceIndex < CONFIG.RACES.length - 1) ? (state.raceIndex + 1) : 0;
   initRace(nextIdx);
 });
 
@@ -1385,7 +1381,7 @@ async function boot(){
 
     await loadAssets();
 
-    // iOS layout stabilize (2-pass)
+    // layout stabilize
     fitCanvasToPlayArea();
     resizeCanvas();
     attachVersionBadge();
