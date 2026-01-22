@@ -1,19 +1,19 @@
 // game.js  (FULL)  MOB STREET - 1P RUN
-// VERSION: v6.4-or-dan (FULL)
-// - iOSでもcanvasが確実に表示されるようfit/resize順を安定化
-// - PL1.png / PL2.png 対応
-// - or.png / dan.png ギミック追加
-// - 被り抑制 / 出現頻度控えめ
-// - リング10個で小加速（空中リングあり）
+// VERSION: v6.5-full (FULL)
+// - or.png: bumpback廃止 → ガードレール同様「乗れる床」扱い
+// - ガードレール: 短すぎ対策（連結して長尺化）
+// - ハーフパイプ: 横を大きく
+// - dan.png: トラックを大きく（特に横）+ 乗ってる間加速 + スロープで確実に乗れる
+// - 被り抑制強化（NO_OVERLAP_X拡大）
 // - 上位8位リアルタイム表示（左上DOM）
 // - リザルト中央ポップアップ（全員分） + NEXT/RETRY
-// - ITEM(5個消費)は無効（後でアイテム用）
 // - 操作エリアにバージョン表示（JSで注入）
+// - iOSでもcanvasが確実に表示されるようfit/resize順を安定化
 
 (() => {
 "use strict";
 
-const VERSION = "v6.4-or-dan";
+const VERSION = "v6.5-full";
 
 /* =======================
    DOM
@@ -37,9 +37,7 @@ const btnItem = document.getElementById("btnJumpBoost"); // 今は無効
   ["dblclick","contextmenu","gesturestart","gesturechange","gestureend"].forEach(ev=>{
     document.addEventListener(ev, prevent, { passive:false });
   });
-  // 画面全体のスクロールを止める（操作エリア外スクロール誤爆防止）
   window.addEventListener("touchmove", prevent, { passive:false });
-  // iOSのテキスト選択を抑止
   document.documentElement.style.webkitUserSelect = "none";
   document.documentElement.style.userSelect = "none";
 })();
@@ -66,7 +64,7 @@ const CONFIG = {
   BOOST_ADD: 210,
   BOOST_TIME: 0.85,
 
-  // ring 10 => small accel (boostの半分くらい)
+  // ring 10 => small accel
   RING_NEED: 10,
   RING_BOOST_ADD: 110,
   RING_BOOST_TIME: 0.55,
@@ -81,20 +79,20 @@ const CONFIG = {
 
   // ギミック頻度（控えめ）
   SPAWN: {
-    RAIL_MIN: 420,
-    RAIL_MAX: 720,
-    PIPE_MIN: 900,
-    PIPE_MAX: 1400,
-    PUDDLE_MIN: 520,
-    PUDDLE_MAX: 820,
+    RAIL_MIN: 520,
+    RAIL_MAX: 860,
+    PIPE_MIN: 1100,
+    PIPE_MAX: 1700,
+    PUDDLE_MIN: 680,
+    PUDDLE_MAX: 980,
     RING_MIN: 170,
     RING_MAX: 260,
-    OR_MIN: 900,
-    OR_MAX: 1500,
-    DAN_MIN: 820,
-    DAN_MAX: 1300,
-    // 同じ距離帯に重ねない（最小間隔）
-    NO_OVERLAP_X: 260
+    OR_MIN: 1150,
+    OR_MAX: 1850,
+    DAN_MIN: 980,
+    DAN_MAX: 1550,
+    // サイズアップに合わせて被り最小間隔を増やす
+    NO_OVERLAP_X: 380
   },
 
   RACES: [
@@ -292,11 +290,8 @@ function attachVersionBadge(){
 
 /* =======================
    PLAY AREA FIT (stable)
-   - レイアウト確定後に測る
-   - 操作エリアとプレイ画面を必ず分離
 ======================= */
 function fitCanvasToPlayArea(){
-  // controls top を拾う
   let top = null;
   const rects = [];
   if(btnJump) rects.push(btnJump.getBoundingClientRect());
@@ -312,7 +307,6 @@ function fitCanvasToPlayArea(){
     top = Math.floor(window.innerHeight * 0.65);
   }
 
-  // セーフエリア考慮（ざっくり）
   const safePad = 6;
   const playH = Math.max(260, Math.floor(top - safePad));
 
@@ -327,7 +321,6 @@ function fitCanvasToPlayArea(){
 function resizeCanvas(){
   const dpr = Math.min(2, window.devicePixelRatio || 1);
   const r = canvas.getBoundingClientRect();
-  // ここが 0 にならないように safeguard
   const w = Math.max(1, Math.floor(r.width));
   const h = Math.max(1, Math.floor(r.height));
   canvas.width  = Math.max(1, Math.floor(w * dpr));
@@ -379,6 +372,7 @@ function ensureStockBarFill(){
   return fill;
 }
 let stockFill = null;
+
 function updateStockBar(){
   if(!stockFill) return;
   const pct = clamp(state.stock / CONFIG.STOCK_MAX, 0, 1) * 100;
@@ -408,7 +402,6 @@ const state = {
 
   rank:1,
   rankText:"",
-
   top8Text:""
 };
 
@@ -420,6 +413,7 @@ function createRunner(name,isPlayer,winRate){
     w:CONFIG.PLAYER_SIZE, h:CONFIG.PLAYER_SIZE,
 
     onGround:true,
+
     onPipe:false,
     pipeRef:null,
     pipeT:0,
@@ -461,6 +455,7 @@ const LETTERS = "ABCDEFGHIJKLMNOPQRST".split("");
 function resetRunner(r){
   r.x=0; r.y=0; r.vy=0;
   r.onGround=true;
+
   r.onPipe=false; r.pipeRef=null; r.pipeT=0;
   r.onDan=false; r.danRef=null;
   r.onOr=false;  r.orRef=null;
@@ -468,7 +463,9 @@ function resetRunner(r){
   r.jumps=0;
   r.boostTimer=0; r.boostPower=0;
   r.slowTimer=0; r.rings=0;
+
   r.finished=false; r.finishTime=Infinity;
+
   r.aiCd = rand(0.20,0.55);
   r.aiBoostCd = rand(0.0, CONFIG.AI_BOOST_COOLDOWN);
 }
@@ -500,10 +497,8 @@ function initRace(idx){
   resetWorldForRace();
   resetGround();
 
-  // 初期スポーン
   spawnWorld(0);
 
-  // 地面に置く
   for(const r of state.runners){
     r.x = 0;
     r.y = world.groundY - r.h;
@@ -528,7 +523,6 @@ function updateRank(){
 }
 
 function updateTop8(){
-  // リアルタイム上位8だけ表示（被りにくい）
   const list = [...state.runners].slice().sort((a,b)=>b.x - a.x);
   let out = "";
   const max = Math.min(8, list.length);
@@ -552,16 +546,15 @@ const world = {
   pipes: [],
   puddles: [],
   rings: [],
-
   ors: [],
   dans: [],
 
-  nextRailX: 280,
-  nextPipeX: 900,
-  nextPuddleX: 520,
+  nextRailX: 320,
+  nextPipeX: 1100,
+  nextPuddleX: 680,
   nextRingX: 220,
-  nextOrX: 900,
-  nextDanX: 820
+  nextOrX: 1150,
+  nextDanX: 980
 };
 
 function resetWorldForRace(){
@@ -572,16 +565,15 @@ function resetWorldForRace(){
   world.ors.length = 0;
   world.dans.length = 0;
 
-  world.nextRailX = 280;
-  world.nextPipeX = 900;
-  world.nextPuddleX = 520;
+  world.nextRailX = 320;
+  world.nextPipeX = 1100;
+  world.nextPuddleX = 680;
   world.nextRingX = 220;
-  world.nextOrX = 900;
-  world.nextDanX = 820;
+  world.nextOrX = 1150;
+  world.nextDanX = 980;
 }
 
 function resetGround(){
-  // 安定：少し上げて「埋まる」回避
   world.groundH = 72;
   const lift = 56;
   world.groundY = (CONFIG.LOGICAL_H - world.groundH) - lift;
@@ -626,7 +618,6 @@ function spawnWorld(camX){
     world.nextDanX += rand(CONFIG.SPAWN.DAN_MIN, CONFIG.SPAWN.DAN_MAX);
   }
 
-  // リングは頻度高め（ただし軽い）
   if(edge > world.nextRingX){
     addRing(world.nextRingX);
     world.nextRingX += rand(CONFIG.SPAWN.RING_MIN, CONFIG.SPAWN.RING_MAX);
@@ -640,15 +631,20 @@ function addRail(x){
   const img = IMAGES.rail;
   if(!img) return;
 
-  // ガードは少し低め
-  const h = Math.floor(world.groundH * 0.55);
+  // 少し大きく（見た目）
+  const h = Math.floor(world.groundH * 0.62);
   const scale = h / img.height;
-  const w = Math.floor(img.width * scale);
+
+  // ★短すぎ対策：横を連結して長尺化（当たり判定も長い）
+  const segW = Math.floor(img.width * scale);
+  const segments = 3; // 3枚分連結（必要ならここを4へ）
+  const w = segW * segments;
 
   world.rails.push({
     x,
     y: world.groundY - h,
-    w, h
+    w, h,
+    segW, segments
   });
 }
 
@@ -656,10 +652,11 @@ function addPipe(x){
   const img = Math.random() < 0.5 ? IMAGES.hpr : IMAGES.hpg;
   if(!img) return;
 
-  // 横を少し大きく（ユーザー要望）
-  const h = Math.floor(world.groundH * 0.62);
+  const h = Math.floor(world.groundH * 0.66);
   const scale = h / img.height;
-  const w = Math.floor(img.width * scale * 1.38);
+
+  // ★横をしっかり増やす
+  const w = Math.floor(img.width * scale * 1.85);
 
   world.pipes.push({
     x,
@@ -678,15 +675,12 @@ function addPuddle(x){
 }
 
 function addRing(x){
-  // 空中リングあり
   const air = Math.random() < 0.55;
   const y = air ? world.groundY - rand(78, 150) : world.groundY - 28;
 
   world.rings.push({
-    x,
-    y,
-    r: 8,
-    takenBy: new Set() // ランナーごとに取得（見た目はプレイヤー基準で消える）
+    x, y, r: 8,
+    takenBy: new Set()
   });
 }
 
@@ -694,9 +688,10 @@ function addOr(x){
   const img = IMAGES.or;
   if(!img) return;
 
-  const h = Math.floor(world.groundH * 0.60);
+  // ★トラック小さすぎ対策：横も少し増やす
+  const h = Math.floor(world.groundH * 0.70);
   const scale = h / img.height;
-  const w = Math.floor(img.width * scale);
+  const w = Math.floor(img.width * scale * 1.35);
 
   world.ors.push({
     x,
@@ -710,13 +705,12 @@ function addDan(x){
   const img = IMAGES.dan;
   if(!img) return;
 
-  // danは少し大きめ＆スロープで必ず乗れる
-  const h = Math.floor(world.groundH * 0.70);
+  // ★dan 小さすぎ対策：特に横
+  const h = Math.floor(world.groundH * 0.78);
   const scale = h / img.height;
-  const w = Math.floor(img.width * scale * 1.12);
+  const w = Math.floor(img.width * scale * 1.60);
 
-  // 形状用：左右スロープ比率
-  const slopeW = w * 0.22;        // 左右22%ずつスロープ
+  const slopeW = w * 0.22;
   const topY   = world.groundY - h;
 
   world.dans.push({
@@ -762,11 +756,9 @@ function updateRun(dt){
   const race = CONFIG.RACES[state.raceIndex];
   const player = state.runners[state.playerIndex];
 
-  // カメラ：プレイヤー左寄せ
   state.cameraX = Math.max(0, player.x - Math.floor(CONFIG.LOGICAL_W * 0.18));
   spawnWorld(state.cameraX);
 
-  // プレイヤーStock回復：5秒/1、最大5、初期0
   state.stockTimer += dt;
   if(state.stockTimer >= CONFIG.STOCK_REGEN){
     state.stockTimer = 0;
@@ -777,15 +769,13 @@ function updateRun(dt){
     const r = state.runners[idx];
     if(r.finished) continue;
 
-    /* --- AI --- */
+    // AI
     if(!r.isPlayer){
       r.aiCd -= dt;
       r.aiBoostCd -= dt;
 
       if(r.aiCd <= 0){
         r.aiCd = rand(0.25, 0.55);
-
-        // 名前持ちはジャンプを少し増やす（ギミックに絡む）
         const jumpChance = (r.winRate > 0.30) ? 0.060 : 0.018;
         if(Math.random() < jumpChance) doJump(r);
       }
@@ -796,7 +786,7 @@ function updateRun(dt){
       }
     }
 
-    /* --- PLAYER INPUT --- */
+    // PLAYER INPUT
     if(r.isPlayer){
       if(input.jump){
         doJump(r);
@@ -809,7 +799,7 @@ function updateRun(dt){
       }
     }
 
-    /* --- SPEED --- */
+    // SPEED
     let speed = CONFIG.BASE_SPEED;
 
     if(r.boostTimer > 0){
@@ -821,19 +811,12 @@ function updateRun(dt){
       speed *= 0.75;
     }
 
-    // danに乗っている間は少し加速
+    // dan加速
     if(r.onDan){
-      speed += 70;
+      speed += 80;
     }
 
-    /* --- PLATFORM STATES RESET --- */
-    // パイプ/ダン/orの上は「yを上書きする」ので、
-    // いったん落下処理に入る前にフラグで分岐する
-    const wasOnPipe = r.onPipe;
-    const wasOnDan  = r.onDan;
-    const wasOnOr   = r.onOr;
-
-    /* --- PIPE SLOPE --- */
+    // PIPE SLOPE
     if(r.onPipe && r.pipeRef){
       r.pipeT = clamp((r.x - r.pipeRef.x) / r.pipeRef.w, 0, 1);
       const angle = Math.PI * r.pipeT;
@@ -852,24 +835,20 @@ function updateRun(dt){
       }
     }
 
-    /* --- DAN SLOPE (必ず乗れる) --- */
+    // DAN SLOPE
     if(r.onDan && r.danRef){
       const d = r.danRef;
       const cx = r.x + r.w * 0.5;
       const t = clamp((cx - d.x) / d.w, 0, 1);
 
-      // 左スロープ → 上 → 右スロープ（線形）
-      let topY = d.y; // 上面のY
+      let topY = d.y;
       if(t < (d.slopeW / d.w)){
-        // 左：地面から上へ
         const tt = t / (d.slopeW / d.w);
         topY = (world.groundY - (d.h * tt));
       }else if(t > (1 - (d.slopeW / d.w))){
-        // 右：上から地面へ
         const tt = (t - (1 - (d.slopeW / d.w))) / (d.slopeW / d.w);
         topY = (world.groundY - (d.h * (1 - tt)));
       }else{
-        // 中央：上面
         topY = d.y;
       }
 
@@ -878,7 +857,6 @@ function updateRun(dt){
       r.onGround = true;
       r.jumps = 0;
 
-      // 抜けたら地面へ
       if(cx >= d.x + d.w){
         r.onDan = false;
         r.danRef = null;
@@ -886,16 +864,14 @@ function updateRun(dt){
       }
     }
 
-    /* --- OR PLATFORM --- */
+    // OR PLATFORM（弾きは廃止：乗れる床のみ）
     if(r.onOr && r.orRef){
       const o = r.orRef;
-      // 上に乗ってる間は固定
       r.y = o.y - r.h;
       r.vy = 0;
       r.onGround = true;
       r.jumps = 0;
 
-      // 抜けたら地面
       if(r.x + r.w*0.5 >= o.x + o.w){
         r.onOr = false;
         r.orRef = null;
@@ -903,17 +879,17 @@ function updateRun(dt){
       }
     }
 
-    /* --- GRAVITY (platformで上書きされない時だけ) --- */
+    // GRAVITY
     if(!r.onPipe && !r.onDan && !r.onOr){
       r.vy += CONFIG.GRAVITY * dt;
       r.vy = Math.min(r.vy, CONFIG.MAX_FALL_V);
       r.y += r.vy * dt;
     }
 
-    /* --- MOVE X --- */
+    // MOVE X
     r.x += speed * dt;
 
-    /* --- GROUND --- */
+    // GROUND
     if(!r.onPipe && !r.onDan && !r.onOr){
       if(r.y + r.h >= world.groundY){
         r.y = world.groundY - r.h;
@@ -925,7 +901,7 @@ function updateRun(dt){
       }
     }
 
-    /* --- RAIL (上から着地のみ) --- */
+    // RAIL (上から着地のみ)
     if(!r.onPipe && !r.onDan && !r.onOr){
       for(const rail of world.rails){
         if(rectHit(r.x, r.y, r.w, r.h, rail.x, rail.y, rail.w, rail.h)){
@@ -934,7 +910,6 @@ function updateRun(dt){
             r.vy = 0;
             r.onGround = true;
             r.jumps = 0;
-            // 乗ると少し加速
             r.boostPower = Math.max(r.boostPower, 60);
             r.boostTimer = Math.max(r.boostTimer, 0.15);
           }
@@ -942,7 +917,7 @@ function updateRun(dt){
       }
     }
 
-    /* --- PIPE ENTER (上からのみ) --- */
+    // PIPE ENTER (上からのみ)
     if(!r.onPipe && !r.onDan && !r.onOr){
       for(const pipe of world.pipes){
         if(rectHit(r.x, r.y, r.w, r.h, pipe.x, pipe.y, pipe.w, pipe.h)){
@@ -952,19 +927,17 @@ function updateRun(dt){
             r.pipeT = 0;
             r.vy = 0;
             r.onGround = false;
+            break;
           }
         }
       }
     }
 
-    /* --- DAN ENTER (スロープで必ず乗れる) --- */
+    // DAN ENTER（範囲入ったら確実に乗る）
     if(!r.onPipe && !r.onDan && !r.onOr){
       for(const d of world.dans){
-        // danの範囲に入ったら、強制的に「上に乗る判定」
-        // （地面走行でも確実に乗る）
         const cx = r.x + r.w*0.5;
         if(cx >= d.x && cx <= d.x + d.w){
-          // danの上に向かう：yが地面より下に潜っている場合も吸い上げ
           r.onDan = true;
           r.danRef = d;
           r.onGround = true;
@@ -975,8 +948,7 @@ function updateRun(dt){
       }
     }
 
-    /* --- OR ENTER / BUMPBACK --- */
-    // orは「上から着地なら乗る」＋「正面衝突なら少し弾く」
+    // OR ENTER（ガードレール同等：上から着地なら乗る）
     if(!r.onPipe && !r.onDan && !r.onOr){
       for(const o of world.ors){
         if(rectHit(r.x, r.y, r.w, r.h, o.x, o.y, o.w, o.h)){
@@ -989,34 +961,26 @@ function updateRun(dt){
             r.vy = 0;
             r.onGround = true;
             r.jumps = 0;
-          }else{
-            // 正面衝突：少し後ろに弾く（プレイヤーにもAIにも）
-            r.x = Math.max(0, r.x - 22);
-            // ほんの少し減速感
-            r.slowTimer = Math.max(r.slowTimer, 0.22);
           }
         }
       }
     }
 
-    /* --- PUDDLE --- */
+    // PUDDLE
     for(const p of world.puddles){
       if(rectHit(r.x, r.y, r.w, r.h, p.x, p.y, p.w, p.h)){
         r.slowTimer = 0.40;
       }
     }
 
-    /* --- RING (ランナー別取得) --- */
+    // RING (runner別取得)
     for(const ring of world.rings){
-      // 自分（プレイヤー）が取ったら見えなくなるため takenBy を使う
       if(ring.takenBy.has(idx)) continue;
-
       const dx = (r.x + r.w/2) - ring.x;
       const dy = (r.y + r.h/2) - ring.y;
       if(dx*dx + dy*dy < ring.r * ring.r * 4){
         ring.takenBy.add(idx);
         r.rings++;
-
         if(r.rings >= CONFIG.RING_NEED){
           r.rings = 0;
           startBoost(r, CONFIG.RING_BOOST_ADD, CONFIG.RING_BOOST_TIME);
@@ -1024,7 +988,7 @@ function updateRun(dt){
       }
     }
 
-    /* --- FINISH --- */
+    // FINISH
     if(!r.finished && (r.x / CONFIG.PX_PER_M) >= race.goal){
       r.finished = true;
       r.finishTime = state.time;
@@ -1037,7 +1001,6 @@ function updateRun(dt){
   updateTop8();
   updateStockBar();
 
-  // 生存数到達でリザルト（あなたのルールのまま）
   if(state.finishedCount >= race.survive){
     showResult();
   }
@@ -1068,13 +1031,10 @@ function update(dt){
     updateRun(dt);
     return;
   }
-  // result: stop simulation
 }
 
 /* =======================
    DRAW: COVER + BOTTOM ALIGN
-   - 左右黒帯なし（cover）
-   - 下端は必ず表示（bottom-align）
 ======================= */
 function beginDraw(){
   const cw = canvas.width;
@@ -1124,7 +1084,7 @@ function drawStage(){
 }
 
 function drawObjects(){
-  // 水たまり
+  // puddle
   ctx.fillStyle = "rgba(120,190,255,0.5)";
   for(const p of world.puddles){
     const sx = p.x - state.cameraX;
@@ -1132,7 +1092,7 @@ function drawObjects(){
     ctx.fillRect(sx, p.y, p.w, p.h);
   }
 
-  // リング（プレイヤーが取ったものは消える）
+  // ring（プレイヤーが取ったものは消える）
   const ringImg = IMAGES.ring;
   if(ringImg){
     const pi = state.playerIndex;
@@ -1149,7 +1109,7 @@ function drawObjects(){
   if(danImg){
     for(const d of world.dans){
       const sx = d.x - state.cameraX;
-      if(sx < -260 || sx > CONFIG.LOGICAL_W + 260) continue;
+      if(sx < -320 || sx > CONFIG.LOGICAL_W + 320) continue;
       ctx.drawImage(d.img, sx, d.y, d.w, d.h);
     }
   }
@@ -1159,25 +1119,30 @@ function drawObjects(){
   if(orImg){
     for(const o of world.ors){
       const sx = o.x - state.cameraX;
-      if(sx < -220 || sx > CONFIG.LOGICAL_W + 220) continue;
+      if(sx < -280 || sx > CONFIG.LOGICAL_W + 280) continue;
       ctx.drawImage(o.img, sx, o.y, o.w, o.h);
     }
   }
 
-  // ハーフパイプ
+  // pipes
   for(const p of world.pipes){
     const sx = p.x - state.cameraX;
-    if(sx < -260 || sx > CONFIG.LOGICAL_W + 260) continue;
+    if(sx < -340 || sx > CONFIG.LOGICAL_W + 340) continue;
     ctx.drawImage(p.img, sx, p.y, p.w, p.h);
   }
 
-  // ガードレール
+  // rails（連結描画）
   const railImg = IMAGES.rail;
   if(railImg){
     for(const r of world.rails){
       const sx = r.x - state.cameraX;
-      if(sx < -200 || sx > CONFIG.LOGICAL_W + 200) continue;
-      ctx.drawImage(railImg, sx, r.y, r.w, r.h);
+      if(sx < -260 || sx > CONFIG.LOGICAL_W + 260) continue;
+
+      // 連結して長く見せる
+      for(let i=0;i<r.segments;i++){
+        const dx = sx + i * r.segW;
+        ctx.drawImage(railImg, dx, r.y, r.segW, r.h);
+      }
     }
   }
 }
@@ -1190,27 +1155,27 @@ function screenXOf(r){
 
 function drawRunner(r){
   const sx = screenXOf(r);
-  if(sx < -120 || sx > CONFIG.LOGICAL_W + 120) return;
+  if(sx < -140 || sx > CONFIG.LOGICAL_W + 140) return;
 
-  // 影
+  // shadow
   ctx.fillStyle = "rgba(0,0,0,0.25)";
   ctx.beginPath();
   ctx.ellipse(sx + r.w/2, world.groundY + 5, r.w*0.35, 5, 0, 0, Math.PI*2);
   ctx.fill();
 
-  // ボード
+  // board
   const board = IMAGES.board;
   if(board){
     ctx.drawImage(board, sx - r.w*0.05, r.y + r.h*0.65, r.w*1.1, r.h*0.45);
   }
 
-  // 本体
+  // body
   const body = (r.onGround || r.onPipe || r.onDan || r.onOr) ? IMAGES.pl1 : IMAGES.pl2;
   if(body){
     ctx.drawImage(body, sx, r.y, r.w, r.h);
   }
 
-  // プレイヤーラベル
+  // player label
   if(r.isPlayer){
     ctx.font = "10px system-ui";
     ctx.textAlign = "center";
@@ -1239,7 +1204,6 @@ function render(){
   drawStage();
   drawObjects();
 
-  // キャラは最前面（名前持ち→プレイヤー）
   for(const r of state.runners){
     if(!r.isPlayer && r.winRate > 0.30) drawRunner(r);
   }
@@ -1311,7 +1275,7 @@ function loop(t){
 }
 
 /* =======================
-   BOOT (重要：fit/resizeは「レイアウト確定後」に必ず再実行)
+   BOOT (iOS安定化：fit/resizeを2段階)
 ======================= */
 async function boot(){
   try{
@@ -1320,17 +1284,13 @@ async function boot(){
     if(overlayTitle) overlayTitle.textContent="Loading";
     if(overlayMsg) overlayMsg.textContent="assets";
 
-    // 先にassets
     await loadAssets();
 
-    // ★ここが安定化の本体：レイアウト確定後に2段階でfit
-    // 1) いまのDOMでfit
     fitCanvasToPlayArea();
     resizeCanvas();
     attachVersionBadge();
     stockFill = ensureStockBarFill();
 
-    // 2) 次フレームでもう一度（iOSのレイアウト遅延対策）
     await new Promise(res=>requestAnimationFrame(()=>res()));
     fitCanvasToPlayArea();
     resizeCanvas();
@@ -1355,7 +1315,6 @@ async function boot(){
 }
 
 window.addEventListener("resize", ()=>{
-  // 走行中でも描画領域が壊れないよう随時追従
   fitCanvasToPlayArea();
   resizeCanvas();
   attachVersionBadge();
@@ -1368,4 +1327,4 @@ window.addEventListener("resize", ()=>{
 attachVersionBadge();
 boot();
 
-})(); 
+})();
