@@ -1,18 +1,17 @@
 // game.js  (FULL)  MOB STREET - 1P RUN
-// VERSION: v6.6-track-pipe-profile (FULL)
-//
-// FIXES:
-// - or(トラック) : 大型化 + 乗ってる間の加速を強化（ガードレール同様に乗れる床）
-// - pipe(ハーフパイプ): 画像上面ライン(非透過)をスキャンして“絵に沿って”走る + 乗ってる間の加速
-// - dan: 乗ってるのに途中で消える見た目問題を解消（矩形カリング）
-// - オブジェ削除: 画面から見えなくなってから削除（pruneWorld）
-// - ジャンプ時: pipe/dan/orの床状態を確実に解除（挙動の破綻防止）
-// - iOS: fit/resize 2段階を維持
+// VERSION: v6.6.2-track-pipe-dan-full (FULL)
+// Fix / Improve:
+// - FIX iOS error: CONFIG.RACES[idx] undefined (idx clamp + safe defaults)
+// - or.png = "TRACK" : bigger + stronger accel, treated like ガードレール系（必ず乗れる／弾かれない）
+// - Halfpipe: 絵に沿う「左→底→右」プロファイルで追従 + 乗ってる間の加速強化 + 地面走行からも自然に乗る
+// - dan: 乗ってる途中で消えない（削除は画面外 + 誰も参照してない時のみ）
+// - オブジェ削除は「画面から見えなくなってから」＆「誰も乗ってない時」だけ
+// - 既存: cover + bottom-align / version badge / top8 / result modal / ring / puddle / stocks
 
 (() => {
 "use strict";
 
-const VERSION = "v6.6-track-pipe-profile";
+const VERSION = "v6.6.2-track-pipe-dan-full";
 
 /* =======================
    DOM
@@ -24,9 +23,9 @@ const overlay = document.getElementById("overlay");
 const overlayTitle = document.getElementById("overlayTitle");
 const overlayMsg = document.getElementById("overlayMsg");
 
-const btnJump = document.getElementById("btnJump");
+const btnJump  = document.getElementById("btnJump");
 const btnBoost = document.getElementById("btnBoost");
-const btnItem = document.getElementById("btnJumpBoost"); // 今は無効
+const btnItem  = document.getElementById("btnJumpBoost"); // 今は無効
 
 /* =======================
    MOBILE LOCK (no select/zoom)
@@ -49,7 +48,6 @@ const CONFIG = {
   LOGICAL_H: 640,
 
   PX_PER_M: 10,
-
   PLAYER_SIZE: 48,
 
   GRAVITY: 2200,
@@ -68,46 +66,56 @@ const CONFIG = {
   RING_BOOST_ADD: 110,
   RING_BOOST_TIME: 0.55,
 
-  // player stock: 5s regen, max5, start0
+  // player stock
   STOCK_MAX: 5,
   STOCK_REGEN: 5.0,
   STOCK_START: 0,
 
-  // AI boost cooldown
+  // AI boost
   AI_BOOST_COOLDOWN: 5.0,
 
-  // ギミック頻度（控えめ）
+  // Spawn tuning (控えめ)
   SPAWN: {
-    RAIL_MIN: 520,
-    RAIL_MAX: 860,
-    PIPE_MIN: 1100,
-    PIPE_MAX: 1700,
-    PUDDLE_MIN: 680,
-    PUDDLE_MAX: 980,
+    RAIL_MIN: 440,
+    RAIL_MAX: 780,
+
+    PIPE_MIN: 980,
+    PIPE_MAX: 1500,
+
+    PUDDLE_MIN: 560,
+    PUDDLE_MAX: 880,
+
     RING_MIN: 170,
     RING_MAX: 260,
-    OR_MIN: 1150,
-    OR_MAX: 1850,
-    DAN_MIN: 980,
-    DAN_MAX: 1550,
-    // サイズアップに合わせて被り最小間隔を増やす
-    NO_OVERLAP_X: 420
+
+    OR_MIN: 980,      // track
+    OR_MAX: 1600,
+
+    DAN_MIN: 860,
+    DAN_MAX: 1400,
+
+    NO_OVERLAP_X: 280
   },
 
-  // 画面外オブジェ削除の安全マージン
-  PRUNE_BEHIND: 520, // cameraX よりこれ以上後ろなら削除OK
+  // Halfpipe profile
+  PIPE_PROFILE: {
+    // left slope ratio, bottom flat ratio = remainder is right
+    LEFT: 0.28,
+    FLAT: 0.18,
+    DEPTH_RATIO: 0.92,       // how deep the bowl goes (as % of pipe height)
+    // accel
+    BASE_ON_PIPE_ADD: 120,   // constant accel while on pipe
+    SLOPE_ADD: 280           // additional accel based on slope
+  },
 
-  // トラック/パイプ 加速
-  OR_SPEED_ADD: 160,     // トラック上の加速（強め）
-  PIPE_BASE_ADD: 110,    // パイプ上の常時加速
-  PIPE_SLOPE_ADD: 220,   // 勾配（上り下り）に応じた加速
+  // Track accel
+  TRACK_ACCEL_ADD: 200, // stronger
 
-  // dan加速（既に良いが少し上げる）
-  DAN_SPEED_ADD: 120,
-
-  // プロファイル抽出用
-  PROFILE_ALPHA_TH: 12,   // 透明判定しきい値
-  PROFILE_SMOOTH: 2       // 近傍平均で滑らかに
+  RACES: [
+    { name:"EASY",   goal:  600, start:26, survive:16 },
+    { name:"NORMAL", goal: 1000, start:16, survive: 6 },
+    { name:"HARD",   goal: 1200, start: 8, survive: 1 }
+  ]
 };
 
 const clamp = (v,a,b)=>Math.max(a,Math.min(b,v));
@@ -125,11 +133,10 @@ const ASSETS = {
   hpr:"hpr.png",
   hpg:"hpg.png",
   ring:"ringtap.png",
-  or:"or.png",
+  or:"or.png",   // TRACK
   dan:"dan.png"
 };
 const IMAGES = {};
-const IMG_META = new Map(); // img -> { surfaceY: number[] }  (y in image coords)
 
 function loadImage(src){
   return new Promise((res,rej)=>{
@@ -139,81 +146,12 @@ function loadImage(src){
     img.src = src;
   });
 }
-
-/* =======================
-   PROFILE: 画像上面スキャン
-   - 同一画像は1回だけ作る
-   - 各x列で「最初の非透過ピクセルY」を surface として保存
-======================= */
-function buildSurfaceProfile(img){
-  if(IMG_META.has(img)) return IMG_META.get(img);
-
-  const w = img.width|0;
-  const h = img.height|0;
-
-  const oc = document.createElement("canvas");
-  oc.width = w; oc.height = h;
-  const octx = oc.getContext("2d", { willReadFrequently: true });
-  octx.clearRect(0,0,w,h);
-  octx.drawImage(img, 0, 0);
-
-  let data;
-  try{
-    data = octx.getImageData(0,0,w,h).data;
-  }catch(e){
-    // もし何かで読めない場合はフォールバック（従来sinに近い）
-    const surfaceY = new Array(w).fill(Math.floor(h*0.5));
-    const meta = { surfaceY, fallback:true };
-    IMG_META.set(img, meta);
-    return meta;
-  }
-
-  const th = CONFIG.PROFILE_ALPHA_TH;
-  const surfaceY = new Array(w);
-
-  for(let x=0;x<w;x++){
-    let yFound = h-1;
-    for(let y=0;y<h;y++){
-      const a = data[(y*w + x)*4 + 3];
-      if(a > th){
-        yFound = y;
-        break;
-      }
-    }
-    surfaceY[x] = yFound;
-  }
-
-  // 簡易スムージング（ギザつき抑制）
-  const k = CONFIG.PROFILE_SMOOTH|0;
-  if(k > 0){
-    const sm = surfaceY.slice();
-    for(let x=0;x<w;x++){
-      let sum=0, cnt=0;
-      for(let dx=-k; dx<=k; dx++){
-        const xx = clamp(x+dx, 0, w-1);
-        sum += surfaceY[xx];
-        cnt++;
-      }
-      sm[x] = sum / cnt;
-    }
-    for(let x=0;x<w;x++) surfaceY[x] = sm[x];
-  }
-
-  const meta = { surfaceY, fallback:false };
-  IMG_META.set(img, meta);
-  return meta;
-}
-
 async function loadAssets(){
   for(const k in ASSETS){
     if(overlayTitle) overlayTitle.textContent = "Loading";
     if(overlayMsg) overlayMsg.textContent = ASSETS[k];
     IMAGES[k] = await loadImage(ASSETS[k]);
   }
-
-  // 重要：パイプ用プロファイルを先に作っておく（プレイ中の初回負荷を避ける）
-  if(IMAGES.hpr) buildSurfaceProfile(IMAGES.hpr);
-  if(IMAGES.hpg) buildSurfaceProfile(IMAGES.hpg);
 }
 
 /* =======================
@@ -361,9 +299,7 @@ function attachVersionBadge(){
       host.appendChild(badge);
     }
     badge.textContent = VERSION;
-  }catch(e){
-    // ignore
-  }
+  }catch(e){}
 }
 
 /* =======================
@@ -372,18 +308,16 @@ function attachVersionBadge(){
 function fitCanvasToPlayArea(){
   let top = null;
   const rects = [];
-  if(btnJump) rects.push(btnJump.getBoundingClientRect());
+  if(btnJump)  rects.push(btnJump.getBoundingClientRect());
   if(btnBoost) rects.push(btnBoost.getBoundingClientRect());
-  if(btnItem) rects.push(btnItem.getBoundingClientRect());
+  if(btnItem)  rects.push(btnItem.getBoundingClientRect());
 
   for(const r of rects){
     if(r && r.top > 0){
       top = (top === null) ? r.top : Math.min(top, r.top);
     }
   }
-  if(top === null){
-    top = Math.floor(window.innerHeight * 0.65);
-  }
+  if(top === null) top = Math.floor(window.innerHeight * 0.65);
 
   const safePad = 6;
   const playH = Math.max(260, Math.floor(top - safePad));
@@ -531,24 +465,33 @@ const LETTERS = "ABCDEFGHIJKLMNOPQRST".split("");
 
 function resetRunner(r){
   r.x=0; r.y=0; r.vy=0;
+
   r.onGround=true;
 
   r.onPipe=false; r.pipeRef=null;
-  r.onDan=false; r.danRef=null;
-  r.onOr=false;  r.orRef=null;
+  r.onDan=false;  r.danRef=null;
+  r.onOr=false;   r.orRef=null;
 
   r.jumps=0;
   r.boostTimer=0; r.boostPower=0;
   r.slowTimer=0; r.rings=0;
-
   r.finished=false; r.finishTime=Infinity;
 
   r.aiCd = rand(0.20,0.55);
   r.aiBoostCd = rand(0.0, CONFIG.AI_BOOST_COOLDOWN);
 }
 
+function safeRaceIndex(idx){
+  const n = Array.isArray(CONFIG.RACES) ? CONFIG.RACES.length : 0;
+  if(n <= 0) return 0;
+  if(!Number.isFinite(idx)) return 0;
+  return clamp(Math.floor(idx), 0, n-1);
+}
+
 function initRace(idx){
-  state.raceIndex = idx;
+  const ri = safeRaceIndex(idx);
+  state.raceIndex = ri;
+
   state.runners.length = 0;
   state.finishedCount = 0;
 
@@ -559,7 +502,7 @@ function initRace(idx){
   for(const g of NAMED_GHOSTS) state.runners.push(createRunner(g.name,false,g.wr));
   for(const l of LETTERS) state.runners.push(createRunner(l,false,0.30));
 
-  const race = CONFIG.RACES[idx];
+  const race = CONFIG.RACES[ri] || CONFIG.RACES[0] || { name:"EASY", goal:600, start:10, survive:5 };
   state.runners = state.runners.slice(0, race.start);
 
   for(const r of state.runners) resetRunner(r);
@@ -574,8 +517,10 @@ function initRace(idx){
   resetWorldForRace();
   resetGround();
 
+  // 初期スポーン
   spawnWorld(0);
 
+  // 地面に置く
   for(const r of state.runners){
     r.x = 0;
     r.y = world.groundY - r.h;
@@ -626,12 +571,12 @@ const world = {
   ors: [],
   dans: [],
 
-  nextRailX: 320,
-  nextPipeX: 1100,
-  nextPuddleX: 680,
+  nextRailX: 280,
+  nextPipeX: 980,
+  nextPuddleX: 560,
   nextRingX: 220,
-  nextOrX: 1150,
-  nextDanX: 980
+  nextOrX: 980,
+  nextDanX: 860
 };
 
 function resetWorldForRace(){
@@ -642,12 +587,12 @@ function resetWorldForRace(){
   world.ors.length = 0;
   world.dans.length = 0;
 
-  world.nextRailX = 320;
-  world.nextPipeX = 1100;
-  world.nextPuddleX = 680;
+  world.nextRailX = 280;
+  world.nextPipeX = 980;
+  world.nextPuddleX = 560;
   world.nextRingX = 220;
-  world.nextOrX = 1150;
-  world.nextDanX = 980;
+  world.nextOrX = 980;
+  world.nextDanX = 860;
 }
 
 function resetGround(){
@@ -695,6 +640,7 @@ function spawnWorld(camX){
     world.nextDanX += rand(CONFIG.SPAWN.DAN_MIN, CONFIG.SPAWN.DAN_MAX);
   }
 
+  // リングは頻度高め
   if(edge > world.nextRingX){
     addRing(world.nextRingX);
     world.nextRingX += rand(CONFIG.SPAWN.RING_MIN, CONFIG.SPAWN.RING_MAX);
@@ -708,40 +654,25 @@ function addRail(x){
   const img = IMAGES.rail;
   if(!img) return;
 
-  const h = Math.floor(world.groundH * 0.62);
+  // ガードレール：短すぎ対策で横を長く
+  const h = Math.floor(world.groundH * 0.58);
   const scale = h / img.height;
+  const w = Math.floor(img.width * scale * 1.35);
 
-  const segW = Math.floor(img.width * scale);
-  const segments = 3;
-  const w = segW * segments;
-
-  world.rails.push({
-    x,
-    y: world.groundY - h,
-    w, h,
-    segW, segments
-  });
+  world.rails.push({ x, y: world.groundY - h, w, h });
 }
 
 function addPipe(x){
   const img = Math.random() < 0.5 ? IMAGES.hpr : IMAGES.hpg;
   if(!img) return;
 
-  const h = Math.floor(world.groundH * 0.66);
+  // ★小さすぎ対策：高さも横も上げる
+  const h = Math.floor(world.groundH * 0.80);
   const scale = h / img.height;
+  const w = Math.floor(img.width * scale * 1.65);
 
-  const w = Math.floor(img.width * scale * 1.85);
-
-  const meta = buildSurfaceProfile(img);
-
-  world.pipes.push({
-    x,
-    y: world.groundY - h,
-    w, h,
-    img,
-    scale,            // ワールド→画像変換に使用
-    meta              // surfaceY
-  });
+  const topY = world.groundY - h;
+  world.pipes.push({ x, y: topY, w, h, img });
 }
 
 function addPuddle(x){
@@ -758,7 +689,8 @@ function addRing(x){
   const y = air ? world.groundY - rand(78, 150) : world.groundY - 28;
 
   world.rings.push({
-    x, y, r: 8,
+    x, y,
+    r: 8,
     takenBy: new Set()
   });
 }
@@ -767,17 +699,13 @@ function addOr(x){
   const img = IMAGES.or;
   if(!img) return;
 
-  // 大型化（もっと大きく）
-  const h = Math.floor(world.groundH * 0.82);
+  // ★トラックはもっと大きく（特に横）
+  const h = Math.floor(world.groundH * 0.78);
   const scale = h / img.height;
-  const w = Math.floor(img.width * scale * 1.75);
+  const w = Math.floor(img.width * scale * 1.55);
 
-  world.ors.push({
-    x,
-    y: world.groundY - h,
-    w, h,
-    img
-  });
+  const topY = world.groundY - h;
+  world.ors.push({ x, y: topY, w, h, img });
 }
 
 function addDan(x){
@@ -786,18 +714,37 @@ function addDan(x){
 
   const h = Math.floor(world.groundH * 0.78);
   const scale = h / img.height;
-  const w = Math.floor(img.width * scale * 1.60);
+  const w = Math.floor(img.width * scale * 1.22);
 
   const slopeW = w * 0.22;
   const topY   = world.groundY - h;
 
-  world.dans.push({
-    x,
-    y: topY,
-    w, h,
-    img,
-    slopeW
-  });
+  world.dans.push({ x, y: topY, w, h, img, slopeW });
+}
+
+/* =======================
+   CLEANUP (offscreen only + not referenced)
+======================= */
+function anyRunnerRef(obj, key){
+  for(const r of state.runners){
+    if(r[key] === obj) return true;
+  }
+  return false;
+}
+function cleanupWorld(){
+  const left = state.cameraX - 520; // 画面外＋余裕
+
+  // railsは参照を持たないので、画面外だけ削除
+  world.rails = world.rails.filter(o => (o.x + o.w) >= left);
+
+  // pipes/dans/orsは「誰かが乗ってる(参照中)」なら画面外でも残す
+  world.pipes = world.pipes.filter(o => (o.x + o.w) >= left || anyRunnerRef(o, "pipeRef"));
+  world.dans  = world.dans .filter(o => (o.x + o.w) >= left || anyRunnerRef(o, "danRef"));
+  world.ors   = world.ors  .filter(o => (o.x + o.w) >= left || anyRunnerRef(o, "orRef"));
+
+  // puddles / rings は画面外で削除（軽い）
+  world.puddles = world.puddles.filter(p => (p.x + p.w) >= left);
+  world.rings   = world.rings.filter(r => (r.x + 40) >= left);
 }
 
 /* =======================
@@ -811,18 +758,7 @@ function rectHit(ax,ay,aw,ah,bx,by,bw,bh){
 /* =======================
    ACTIONS
 ======================= */
-function detachPlatforms(r){
-  if(r.onPipe){ r.onPipe=false; r.pipeRef=null; }
-  if(r.onDan ){ r.onDan=false;  r.danRef=null; }
-  if(r.onOr  ){ r.onOr=false;   r.orRef=null; }
-}
-
 function doJump(r){
-  // 床扱い中にジャンプしたら確実に解除（挙動破綻防止）
-  if(r.onPipe || r.onDan || r.onOr){
-    detachPlatforms(r);
-  }
-
   if(r.onGround){
     r.vy = -CONFIG.JUMP_V1;
     r.onGround = false;
@@ -832,97 +768,62 @@ function doJump(r){
     r.jumps = 2;
   }
 }
-
 function startBoost(r, power, time){
   r.boostPower = power;
   r.boostTimer = time;
 }
 
 /* =======================
-   WORLD PRUNE (画面外削除)
-   - “見えなくなってから”削除
-   - 誰かが乗ってるpipe/or/danは絶対に削除しない
+   PIPE PROFILE (left -> flat -> right)
+   returns {yTop, slopeAbs01}
 ======================= */
-function pruneWorld(camX){
-  const limit = camX - CONFIG.PRUNE_BEHIND;
+function pipeProfile(pipe, runner){
+  const cx = runner.x + runner.w * 0.5;
+  const t = clamp((cx - pipe.x) / pipe.w, 0, 1);
 
-  // 乗ってる参照を集める
-  const ridingPipes = new Set();
-  const ridingOrs   = new Set();
-  const ridingDans  = new Set();
-  for(const r of state.runners){
-    if(r.onPipe && r.pipeRef) ridingPipes.add(r.pipeRef);
-    if(r.onOr   && r.orRef)   ridingOrs.add(r.orRef);
-    if(r.onDan  && r.danRef)  ridingDans.add(r.danRef);
+  const L = CONFIG.PIPE_PROFILE.LEFT;
+  const F = CONFIG.PIPE_PROFILE.FLAT;
+  const R = Math.max(0.0001, 1 - (L + F));
+
+  const depth = pipe.h * CONFIG.PIPE_PROFILE.DEPTH_RATIO;
+  const topY  = pipe.y;
+  const bottomY = pipe.y + depth;
+
+  let y;
+  let slopeAbs01;
+
+  if(t < L){
+    const tt = t / Math.max(0.0001, L);
+    y = topY + (bottomY - topY) * tt;
+    // 左→底：傾斜強め
+    slopeAbs01 = 1.0;
+  }else if(t < L + F){
+    y = bottomY;
+    slopeAbs01 = 0.0;
+  }else{
+    const tt = (t - (L + F)) / R;
+    y = bottomY + (topY - bottomY) * tt;
+    // 底→右：傾斜強め
+    slopeAbs01 = 1.0;
   }
 
-  world.puddles = world.puddles.filter(o => (o.x + o.w) >= limit);
-  world.rings   = world.rings.filter(o => (o.x + 20) >= limit);
-
-  world.rails = world.rails.filter(o => (o.x + o.w) >= limit);
-
-  world.pipes = world.pipes.filter(o => {
-    if(ridingPipes.has(o)) return true;
-    return (o.x + o.w) >= limit;
-  });
-
-  world.ors = world.ors.filter(o => {
-    if(ridingOrs.has(o)) return true;
-    return (o.x + o.w) >= limit;
-  });
-
-  world.dans = world.dans.filter(o => {
-    if(ridingDans.has(o)) return true;
-    return (o.x + o.w) >= limit;
-  });
-}
-
-/* =======================
-   PIPE SURFACE: 絵に沿うY
-======================= */
-function pipeSurfaceY(pipe, worldX){
-  // pipe内のローカルX（0..w）
-  const lx = clamp(worldX - pipe.x, 0, pipe.w-1);
-
-  // 画像側のXへ
-  const imgX = clamp(Math.floor(lx / pipe.scale), 0, pipe.img.width - 1);
-
-  // フォールバックの場合は従来っぽいカーブ
-  if(pipe.meta && pipe.meta.fallback){
-    const t = clamp(lx / pipe.w, 0, 1);
-    const lift = Math.sin(Math.PI * t);
-    const y = (pipe.y + pipe.h) - lift * pipe.h;
-    return y;
-  }
-
-  const sy = pipe.meta.surfaceY[imgX]; // 画像上面Y
-  const y = pipe.y + (sy * pipe.scale); // ワールドYへ
-  return y;
-}
-
-// 勾配（スロープ）っぽい量：隣の差分でざっくり
-function pipeSlope(pipe, worldX){
-  const x1 = worldX;
-  const x2 = worldX + 6; // ちょい先
-  const y1 = pipeSurfaceY(pipe, x1);
-  const y2 = pipeSurfaceY(pipe, x2);
-  // 上り( yが小さい方向 ) なら正、下りなら負になるように
-  return clamp((y1 - y2) / 6, -1.2, 1.2);
+  y = clamp(y, topY, bottomY);
+  return { yTop: y, slopeAbs01 };
 }
 
 /* =======================
    RUN UPDATE
 ======================= */
 function updateRun(dt){
-  const race = CONFIG.RACES[state.raceIndex];
+  const race = CONFIG.RACES[state.raceIndex] || CONFIG.RACES[0] || { name:"EASY", goal:600, start:10, survive:5 };
   const player = state.runners[state.playerIndex];
 
+  // camera
   state.cameraX = Math.max(0, player.x - Math.floor(CONFIG.LOGICAL_W * 0.18));
   spawnWorld(state.cameraX);
+  cleanupWorld();
 
-  // 画面外オブジェ整理（重さ対策）
-  pruneWorld(state.cameraX);
-
+  // stock regen
   state.stockTimer += dt;
   if(state.stockTimer >= CONFIG.STOCK_REGEN){
     state.stockTimer = 0;
@@ -933,7 +834,7 @@ function updateRun(dt){
     const r = state.runners[idx];
     if(r.finished) continue;
 
-    // AI
+    /* --- AI --- */
     if(!r.isPlayer){
       r.aiCd -= dt;
       r.aiBoostCd -= dt;
@@ -943,14 +844,13 @@ function updateRun(dt){
         const jumpChance = (r.winRate > 0.30) ? 0.060 : 0.018;
         if(Math.random() < jumpChance) doJump(r);
       }
-
       if(r.aiBoostCd <= 0 && Math.random() < (r.winRate * 0.12)){
         r.aiBoostCd = CONFIG.AI_BOOST_COOLDOWN;
         startBoost(r, CONFIG.BOOST_ADD, CONFIG.BOOST_TIME);
       }
     }
 
-    // PLAYER INPUT
+    /* --- PLAYER --- */
     if(r.isPlayer){
       if(input.jump){
         doJump(r);
@@ -963,7 +863,7 @@ function updateRun(dt){
       }
     }
 
-    // SPEED
+    /* --- SPEED --- */
     let speed = CONFIG.BASE_SPEED;
 
     if(r.boostTimer > 0){
@@ -975,98 +875,102 @@ function updateRun(dt){
       speed *= 0.75;
     }
 
-    // dan加速
-    if(r.onDan) speed += CONFIG.DAN_SPEED_ADD;
+    // Track accel
+    if(r.onOr) speed += CONFIG.TRACK_ACCEL_ADD;
 
-    // or加速（強め）
-    if(r.onOr) speed += CONFIG.OR_SPEED_ADD;
+    // dan accel
+    if(r.onDan) speed += 95;
 
-    // pipe加速（常時 + 勾配）
-    if(r.onPipe && r.pipeRef){
-      speed += CONFIG.PIPE_BASE_ADD;
-      const s = pipeSlope(r.pipeRef, r.x + r.w*0.5);
-      speed += s * CONFIG.PIPE_SLOPE_ADD;
-    }
+    /* --- PLATFORM FOLLOW FIRST (pipe/dan/or keeps y fixed) --- */
 
-    // --- PIPE FOLLOW (絵に沿ってY) ---
+    // PIPE follow
     if(r.onPipe && r.pipeRef){
       const pipe = r.pipeRef;
+      const cx = r.x + r.w * 0.5;
 
-      const cx = r.x + r.w*0.5;
-      const surface = pipeSurfaceY(pipe, cx);
-
-      // 画像上面に沿って走る
-      r.y = surface - r.h;
-      r.vy = 0;
-      r.onGround = true;
-      r.jumps = 0;
-
-      // パイプ外へ出たら地面へ
       if(cx >= pipe.x + pipe.w){
         r.onPipe = false;
         r.pipeRef = null;
         r.y = world.groundY - r.h;
+        r.vy = 0;
+        r.onGround = true;
+        r.jumps = 0;
+      }else{
+        const pf = pipeProfile(pipe, r);
+        r.y = pf.yTop - r.h;
+        r.vy = 0;
+        r.onGround = true;
+        r.jumps = 0;
+
+        // accel while on pipe
+        speed += CONFIG.PIPE_PROFILE.BASE_ON_PIPE_ADD;
+        speed += pf.slopeAbs01 * CONFIG.PIPE_PROFILE.SLOPE_ADD;
       }
     }
 
-    // --- DAN SLOPE ---
+    // DAN follow
     if(r.onDan && r.danRef){
       const d = r.danRef;
       const cx = r.x + r.w * 0.5;
-      const t = clamp((cx - d.x) / d.w, 0, 1);
 
-      let topY = d.y;
-      const sratio = (d.slopeW / d.w);
-
-      if(t < sratio){
-        const tt = t / sratio;
-        topY = (world.groundY - (d.h * tt));
-      }else if(t > (1 - sratio)){
-        const tt = (t - (1 - sratio)) / sratio;
-        topY = (world.groundY - (d.h * (1 - tt)));
-      }else{
-        topY = d.y;
-      }
-
-      r.y = topY - r.h;
-      r.vy = 0;
-      r.onGround = true;
-      r.jumps = 0;
-
-      // 抜けたら地面へ
       if(cx >= d.x + d.w){
         r.onDan = false;
         r.danRef = null;
         r.y = world.groundY - r.h;
+        r.vy = 0;
+        r.onGround = true;
+      }else{
+        const t = clamp((cx - d.x) / d.w, 0, 1);
+        let topY = d.y;
+
+        const sw = (d.slopeW / d.w);
+        if(t < sw){
+          const tt = t / Math.max(0.0001, sw);
+          topY = (world.groundY - (d.h * tt));
+        }else if(t > (1 - sw)){
+          const tt = (t - (1 - sw)) / Math.max(0.0001, sw);
+          topY = (world.groundY - (d.h * (1 - tt)));
+        }else{
+          topY = d.y;
+        }
+
+        r.y = topY - r.h;
+        r.vy = 0;
+        r.onGround = true;
+        r.jumps = 0;
       }
     }
 
-    // --- OR PLATFORM ---
+    // OR (TRACK) follow
     if(r.onOr && r.orRef){
       const o = r.orRef;
-      r.y = o.y - r.h;
-      r.vy = 0;
-      r.onGround = true;
-      r.jumps = 0;
+      const cx = r.x + r.w * 0.5;
 
-      if(r.x + r.w*0.5 >= o.x + o.w){
+      if(cx >= o.x + o.w){
         r.onOr = false;
         r.orRef = null;
         r.y = world.groundY - r.h;
+        r.vy = 0;
+        r.onGround = true;
+      }else{
+        r.y = o.y - r.h;
+        r.vy = 0;
+        r.onGround = true;
+        r.jumps = 0;
       }
     }
 
-    // GRAVITY（床処理以外）
+    /* --- GRAVITY (only if not on any platform) --- */
     if(!r.onPipe && !r.onDan && !r.onOr){
       r.vy += CONFIG.GRAVITY * dt;
       r.vy = Math.min(r.vy, CONFIG.MAX_FALL_V);
       r.y += r.vy * dt;
     }
 
-    // MOVE X
+    /* --- MOVE X --- */
     r.x += speed * dt;
 
-    // GROUND
+    /* --- GROUND --- */
     if(!r.onPipe && !r.onDan && !r.onOr){
       if(r.y + r.h >= world.groundY){
         r.y = world.groundY - r.h;
@@ -1078,7 +982,7 @@ function updateRun(dt){
       }
     }
 
-    // RAIL (上から着地のみ)
+    /* --- RAIL (上から着地のみ) --- */
     if(!r.onPipe && !r.onDan && !r.onOr){
       for(const rail of world.rails){
         if(rectHit(r.x, r.y, r.w, r.h, rail.x, rail.y, rail.w, rail.h)){
@@ -1087,18 +991,37 @@ function updateRun(dt){
             r.vy = 0;
             r.onGround = true;
             r.jumps = 0;
-            r.boostPower = Math.max(r.boostPower, 60);
-            r.boostTimer = Math.max(r.boostTimer, 0.15);
+
+            // 乗ると少し加速
+            r.boostPower = Math.max(r.boostPower, 70);
+            r.boostTimer = Math.max(r.boostTimer, 0.16);
           }
         }
       }
     }
 
-    // PIPE ENTER (上からのみ)
+    /* --- PIPE ENTER (地面走行からも自然に乗る + 上から着地もOK) --- */
     if(!r.onPipe && !r.onDan && !r.onOr){
       for(const pipe of world.pipes){
-        if(rectHit(r.x, r.y, r.w, r.h, pipe.x, pipe.y, pipe.w, pipe.h)){
-          if(r.vy >= 0 && (r.y + r.h - r.vy * dt) <= pipe.y + 2){
+        const cx = r.x + r.w * 0.5;
+        if(cx >= pipe.x && cx <= pipe.x + pipe.w){
+          // 1) 上から着地
+          if(rectHit(r.x, r.y, r.w, r.h, pipe.x, pipe.y, pipe.w, pipe.h)){
+            const prevBottom = (r.y + r.h - r.vy * dt);
+            const landing = (r.vy >= 0 && prevBottom <= pipe.y + 2);
+            if(landing){
+              r.onPipe = true;
+              r.pipeRef = pipe;
+              r.vy = 0;
+              r.onGround = true;
+              r.jumps = 0;
+              break;
+            }
+          }
+          // 2) 地面走行で「左リムに入った」時（弾かれないよう吸着）
+          // 地面付近ならパイプに吸い込ませる
+          const nearGround = (r.y + r.h) >= (world.groundY - 4);
+          if(nearGround){
             r.onPipe = true;
             r.pipeRef = pipe;
             r.vy = 0;
@@ -1110,7 +1033,7 @@ function updateRun(dt){
       }
     }
 
-    // DAN ENTER（範囲入ったら確実に乗る）
+    /* --- DAN ENTER (必ず乗れる) --- */
     if(!r.onPipe && !r.onDan && !r.onOr){
       for(const d of world.dans){
         const cx = r.x + r.w*0.5;
@@ -1125,39 +1048,39 @@ function updateRun(dt){
       }
     }
 
-    // OR ENTER（上から着地なら乗る）
+    /* --- OR ENTER (TRACK: 必ず乗れる / 弾かれない) --- */
     if(!r.onPipe && !r.onDan && !r.onOr){
       for(const o of world.ors){
-        if(rectHit(r.x, r.y, r.w, r.h, o.x, o.y, o.w, o.h)){
-          const prevBottom = (r.y + r.h - r.vy * dt);
-          const landing = (r.vy >= 0 && prevBottom <= o.y + 2);
-          if(landing){
-            r.onOr = true;
-            r.orRef = o;
-            r.y = o.y - r.h;
-            r.vy = 0;
-            r.onGround = true;
-            r.jumps = 0;
-          }
+        const cx = r.x + r.w*0.5;
+        if(cx >= o.x && cx <= o.x + o.w){
+          // 走行でも着地でも必ず乗る
+          r.onOr = true;
+          r.orRef = o;
+          r.onGround = true;
+          r.vy = 0;
+          r.jumps = 0;
+          break;
         }
       }
     }
 
-    // PUDDLE
+    /* --- PUDDLE --- */
     for(const p of world.puddles){
       if(rectHit(r.x, r.y, r.w, r.h, p.x, p.y, p.w, p.h)){
         r.slowTimer = 0.40;
       }
     }
 
-    // RING (runner別取得)
+    /* --- RING (ランナー別取得) --- */
     for(const ring of world.rings){
       if(ring.takenBy.has(idx)) continue;
+
       const dx = (r.x + r.w/2) - ring.x;
       const dy = (r.y + r.h/2) - ring.y;
       if(dx*dx + dy*dy < ring.r * ring.r * 4){
         ring.takenBy.add(idx);
         r.rings++;
+
         if(r.rings >= CONFIG.RING_NEED){
           r.rings = 0;
           startBoost(r, CONFIG.RING_BOOST_ADD, CONFIG.RING_BOOST_TIME);
@@ -1165,7 +1088,7 @@ function updateRun(dt){
       }
     }
 
-    // FINISH
+    /* --- FINISH --- */
     if(!r.finished && (r.x / CONFIG.PX_PER_M) >= race.goal){
       r.finished = true;
       r.finishTime = state.time;
@@ -1178,6 +1101,7 @@ function updateRun(dt){
   updateTop8();
   updateStockBar();
 
+  // survive到達でリザルト
   if(state.finishedCount >= race.survive){
     showResult();
   }
@@ -1208,6 +1132,7 @@ function update(dt){
     updateRun(dt);
     return;
   }
+  // result: stop simulation
 }
 
 /* =======================
@@ -1225,7 +1150,7 @@ function beginDraw(){
   const drawH = CONFIG.LOGICAL_H * s;
 
   const ox = (cw - drawW) * 0.5;
-  const oy = (ch - drawH);
+  const oy = (ch - drawH); // bottom-align
 
   ctx.setTransform(1,0,0,1,0,0);
   ctx.fillStyle = "#163d7a";
@@ -1260,65 +1185,61 @@ function drawStage(){
   }
 }
 
-function cullByRect(x,w, margin){
-  // 左端が右に行きすぎ or 右端が左に行きすぎ でカリング
-  const left = x - state.cameraX;
-  const right = left + w;
-  return (right < -margin) || (left > CONFIG.LOGICAL_W + margin);
-}
-
 function drawObjects(){
   // puddle
   ctx.fillStyle = "rgba(120,190,255,0.5)";
   for(const p of world.puddles){
-    if(cullByRect(p.x, p.w, 140)) continue;
     const sx = p.x - state.cameraX;
+    if(sx < -120 || sx > CONFIG.LOGICAL_W + 120) continue;
     ctx.fillRect(sx, p.y, p.w, p.h);
   }
 
-  // ring（プレイヤーが取ったものは消える）
+  // ring (player taken hidden)
   const ringImg = IMAGES.ring;
   if(ringImg){
     const pi = state.playerIndex;
     for(const r of world.rings){
       if(r.takenBy.has(pi)) continue;
-      if(cullByRect(r.x-10, 20, 120)) continue;
       const sx = r.x - state.cameraX;
+      if(sx < -80 || sx > CONFIG.LOGICAL_W + 80) continue;
       ctx.drawImage(ringImg, sx - 10, r.y - 10, 20, 20);
     }
   }
 
-  // dan（矩形カリング）
-  for(const d of world.dans){
-    if(cullByRect(d.x, d.w, 220)) continue;
-    const sx = d.x - state.cameraX;
-    ctx.drawImage(d.img, sx, d.y, d.w, d.h);
+  // dan
+  const danImg = IMAGES.dan;
+  if(danImg){
+    for(const d of world.dans){
+      const sx = d.x - state.cameraX;
+      if(sx < -260 || sx > CONFIG.LOGICAL_W + 260) continue;
+      ctx.drawImage(d.img, sx, d.y, d.w, d.h);
+    }
   }
 
-  // or（矩形カリング）
-  for(const o of world.ors){
-    if(cullByRect(o.x, o.w, 220)) continue;
-    const sx = o.x - state.cameraX;
-    ctx.drawImage(o.img, sx, o.y, o.w, o.h);
+  // track (or)
+  const orImg = IMAGES.or;
+  if(orImg){
+    for(const o of world.ors){
+      const sx = o.x - state.cameraX;
+      if(sx < -260 || sx > CONFIG.LOGICAL_W + 260) continue;
+      ctx.drawImage(o.img, sx, o.y, o.w, o.h);
+    }
   }
 
-  // pipes（矩形カリング）
+  // halfpipe
   for(const p of world.pipes){
-    if(cullByRect(p.x, p.w, 260)) continue;
     const sx = p.x - state.cameraX;
+    if(sx < -260 || sx > CONFIG.LOGICAL_W + 260) continue;
     ctx.drawImage(p.img, sx, p.y, p.w, p.h);
   }
 
-  // rails（連結描画 + 矩形カリング）
+  // rail
   const railImg = IMAGES.rail;
   if(railImg){
     for(const r of world.rails){
-      if(cullByRect(r.x, r.w, 220)) continue;
       const sx = r.x - state.cameraX;
-      for(let i=0;i<r.segments;i++){
-        const dx = sx + i * r.segW;
-        ctx.drawImage(railImg, dx, r.y, r.segW, r.h);
-      }
+      if(sx < -220 || sx > CONFIG.LOGICAL_W + 220) continue;
+      ctx.drawImage(railImg, sx, r.y, r.w, r.h);
     }
   }
 }
@@ -1351,7 +1272,7 @@ function drawRunner(r){
     ctx.drawImage(body, sx, r.y, r.w, r.h);
   }
 
-  // player label
+  // label
   if(r.isPlayer){
     ctx.font = "10px system-ui";
     ctx.textAlign = "center";
@@ -1380,6 +1301,7 @@ function render(){
   drawStage();
   drawObjects();
 
+  // キャラ（名前持ち→プレイヤー）
   for(const r of state.runners){
     if(!r.isPlayer && r.winRate > 0.30) drawRunner(r);
   }
@@ -1397,11 +1319,12 @@ function hideResult(){
 function showResult(){
   if(state.phase === "result") return;
   state.phase = "result";
+
   updateRank();
   updateTop8();
   updateStockBar();
 
-  const race = CONFIG.RACES[state.raceIndex];
+  const race = CONFIG.RACES[state.raceIndex] || CONFIG.RACES[0] || { name:"EASY", goal:600 };
   const list = [...state.runners].sort((a,b)=>a.finishTime - b.finishTime);
 
   const me = state.runners[state.playerIndex];
@@ -1432,7 +1355,7 @@ rmRetry?.addEventListener("pointerdown", ()=>{
 });
 rmNext?.addEventListener("pointerdown", ()=>{
   hideResult();
-  const nextIdx = (state.raceIndex < CONFIG.RACES.length - 1) ? (state.raceIndex + 1) : 0;
+  const nextIdx = (safeRaceIndex(state.raceIndex) < CONFIG.RACES.length - 1) ? (safeRaceIndex(state.raceIndex) + 1) : 0;
   initRace(nextIdx);
 });
 
@@ -1451,7 +1374,7 @@ function loop(t){
 }
 
 /* =======================
-   BOOT (iOS安定化：fit/resizeを2段階)
+   BOOT
 ======================= */
 async function boot(){
   try{
@@ -1462,6 +1385,7 @@ async function boot(){
 
     await loadAssets();
 
+    // iOS layout stabilize (2-pass)
     fitCanvasToPlayArea();
     resizeCanvas();
     attachVersionBadge();
