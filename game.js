@@ -430,7 +430,7 @@ function ensureCupModal(){
   modal.style.top = "0";
   modal.style.right = "0";
   modal.style.bottom = "0";
-  modal.style.zIndex = "100000";
+  modal.style.zIndex = "1000000";
   modal.style.display = "none";
   modal.style.alignItems = "center";
   modal.style.justifyContent = "center";
