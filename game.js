@@ -1,5 +1,5 @@
 // game.js  (FULL)  MOB STREET - 1P RUN
-// VERSION: v6.6.3-rail-drawfix (FULL)
+// VERSION: v6.8.2-cupfix (FULL)
 // Fix / Improve (based on your feedback):
 // - Platform "snap"/吸い付き防止: dan / track(or) / halfpipe は「上から着地した時だけ乗る」
 // - Jump中(vy<0)は絶対に platform enter しない（横当たりも乗らない）
@@ -13,7 +13,7 @@
 (() => {
 "use strict";
 
-const VERSION = "v6.7-brief-goal-ghost";
+const VERSION = "v6.8.2-cupfix";
 
 /* =======================
    DOM
@@ -357,6 +357,132 @@ function showBrief(){
   if(briefModal) briefModal.style.display = "flex";
 }
 
+/* =======================
+   CUP SELECT (DOM)
+   - HTML/CSSは触らずJSで注入
+   - 今後 CUPS 配列を増やせば拡張可
+======================= */
+const CUPS = [
+  {
+    id: "mob",
+    name: "MOB CUP",
+    namedGhosts: [
+      {name:"フレンチ",wr:0.60},
+      {name:"レッド",wr:0.70},
+      {name:"レッドブルー",wr:0.90},
+      {name:"ブラック",wr:0.85},
+      {name:"ホワイト",wr:0.75}
+    ],
+    // 各レースのスポーン傾向（CONFIG.SPAWN を上書き）
+    spawnByRace: [
+      {}, // EASY: 既存のまま
+      {}, // NORMAL
+      {}  // HARD
+    ]
+  },
+  {
+    id: "mikan",
+    name: "mikan CUP",
+    namedGhosts: [
+      {name:"みかん",wr:0.95},
+      {name:"ハリネズミ",wr:0.80},
+      {name:"ネコクー",wr:0.90},
+      {name:"ドオー",wr:0.90},
+      {name:"モスラ",wr:0.80}
+    ],
+    // easy=レール中心 / normal=ハーフパイプ中心 / hard=dan+トラック中心
+    spawnByRace: [
+      { // EASY
+        RAIL_MIN: 240, RAIL_MAX: 420,
+        PIPE_MIN: 1400, PIPE_MAX: 2100,
+        OR_MIN:   1400, OR_MAX:   2200,
+        DAN_MIN:  1400, DAN_MAX:  2200
+      },
+      { // NORMAL
+        RAIL_MIN: 560, RAIL_MAX: 900,
+        PIPE_MIN: 620, PIPE_MAX: 980,
+        OR_MIN:   1400, OR_MAX:  2200,
+        DAN_MIN:  1400, DAN_MAX: 2200
+      },
+      { // HARD
+        RAIL_MIN: 700, RAIL_MAX: 1100,
+        PIPE_MIN: 1400, PIPE_MAX: 2200,
+        OR_MIN:   520, OR_MAX:   860,
+        DAN_MIN:  520, DAN_MAX:  860
+      }
+    ]
+  }
+];
+
+function getCupById(id){
+  return CUPS.find(c=>c.id===id) || CUPS[0];
+}
+
+function ensureCupModal(){
+  let modal = document.getElementById("jsCupModal");
+  if(modal) return modal;
+
+  modal = document.createElement("div");
+  modal.id = "jsCupModal";
+  modal.style.position = "fixed";
+  modal.style.left = "0";
+  modal.style.top = "0";
+  modal.style.right = "0";
+  modal.style.bottom = "0";
+  modal.style.zIndex = "1000000";
+  modal.style.display = "none";
+  modal.style.alignItems = "center";
+  modal.style.justifyContent = "center";
+  modal.style.background = "rgba(0,0,0,0.55)";
+  modal.style.backdropFilter = "blur(6px)";
+  modal.style.pointerEvents = "auto";
+
+  const card = document.createElement("div");
+  card.style.width = "min(92vw, 420px)";
+  card.style.borderRadius = "16px";
+  card.style.background = "rgba(10,12,18,0.92)";
+  card.style.border = "1px solid rgba(255,255,255,0.10)";
+  card.style.boxShadow = "0 20px 60px rgba(0,0,0,0.55)";
+  card.style.overflow = "hidden";
+
+  const head = document.createElement("div");
+  head.style.padding = "14px";
+  head.style.borderBottom = "1px solid rgba(255,255,255,0.10)";
+  head.innerHTML = `
+    <div style="font:900 16px system-ui;color:#fff;">SELECT CUP</div>
+    <div style="margin-top:4px;font:600 12px system-ui;color:rgba(255,255,255,0.70);">大会を選択してください</div>
+  `;
+
+  const body = document.createElement("div");
+  body.style.padding = "12px";
+  body.style.display = "grid";
+  body.style.gap = "10px";
+
+  for(const c of CUPS){
+    const b = document.createElement("button");
+    b.textContent = c.name;
+    b.style.width = "100%";
+    b.style.padding = "14px 12px";
+    b.style.borderRadius = "14px";
+    b.style.border = "1px solid rgba(255,255,255,0.16)";
+    b.style.background = "rgba(255,255,255,0.10)";
+    b.style.color = "#fff";
+    b.style.font = "900 15px system-ui";
+    b.addEventListener("pointerdown", ()=>{
+      selectCup(c.id);
+    });
+    body.appendChild(b);
+  }
+
+  card.appendChild(head);
+  card.appendChild(body);
+  modal.appendChild(card);
+  document.body.appendChild(modal);
+  return modal;
+}
+
+let cupModal = null;
+
 /* ===== Version badge in control area ===== */
 function attachVersionBadge(){
   try{
@@ -501,8 +627,22 @@ const state = {
 
   rank:1,
   rankText:"",
-  top8Text:""
+  top8Text:"",
+
+  cupId:"mob"
 };
+
+function selectCup(cupId){
+  state.cupId = (getCupById(cupId).id);
+  if(cupModal) cupModal.style.display = "none";
+  // レース開始（最初はEASY）
+  initRace(0);
+}
+
+function showCupSelect(){
+  if(!cupModal) cupModal = ensureCupModal();
+  if(cupModal) cupModal.style.display = "flex";
+}
 
 function createRunner(name,isPlayer,winRate){
   return {
@@ -541,14 +681,19 @@ function createRunner(name,isPlayer,winRate){
 /* =======================
    RACE / GHOSTS
 ======================= */
-const NAMED_GHOSTS = [
-  {name:"フレンチ",wr:0.60},
-  {name:"レッド",wr:0.70},
-  {name:"レッドブルー",wr:0.90},
-  {name:"ブラック",wr:0.85},
-  {name:"ホワイト",wr:0.75}
-];
+
 const LETTERS = "ABCDEFGHIJKLMNOPQRST".split("");
+
+function getNamedGhosts(){
+  return getCupById(state.cupId).namedGhosts || [];
+}
+
+function getSpawnOverrides(){
+  const cup = getCupById(state.cupId);
+  const byRace = cup.spawnByRace || [];
+  return byRace[state.raceIndex] || {};
+}
+
 
 function resetRunner(r){
   r.x=0; r.y=0; r.vy=0;
@@ -585,7 +730,7 @@ function initRace(idx){
   state.runners.push(player);
   state.playerIndex = 0;
 
-  for(const g of NAMED_GHOSTS) state.runners.push(createRunner(g.name,false,g.wr));
+  for(const g of getNamedGhosts()) state.runners.push(createRunner(g.name,false,g.wr));
   for(const l of LETTERS) state.runners.push(createRunner(l,false,0.30));
 
   const race = CONFIG.RACES[ri] || CONFIG.RACES[0] || { name:"EASY", goal:600, start:10, survive:5 };
@@ -698,35 +843,36 @@ function isTooClose(x){
 
 function spawnWorld(camX){
   const edge = camX + CONFIG.LOGICAL_W;
+  const SPAWN = Object.assign({}, CONFIG.SPAWN, getSpawnOverrides());
 
   if(edge > world.nextRailX){
     const x = world.nextRailX;
     if(!isTooClose(x)) addRail(x);
-    world.nextRailX += rand(CONFIG.SPAWN.RAIL_MIN, CONFIG.SPAWN.RAIL_MAX);
+    world.nextRailX += rand(SPAWN.RAIL_MIN, SPAWN.RAIL_MAX);
   }
   if(edge > world.nextPipeX){
     const x = world.nextPipeX;
     if(!isTooClose(x)) addPipe(x);
-    world.nextPipeX += rand(CONFIG.SPAWN.PIPE_MIN, CONFIG.SPAWN.PIPE_MAX);
+    world.nextPipeX += rand(SPAWN.PIPE_MIN, SPAWN.PIPE_MAX);
   }
   if(edge > world.nextPuddleX){
     const x = world.nextPuddleX;
     if(!isTooClose(x)) addPuddle(x);
-    world.nextPuddleX += rand(CONFIG.SPAWN.PUDDLE_MIN, CONFIG.SPAWN.PUDDLE_MAX);
+    world.nextPuddleX += rand(SPAWN.PUDDLE_MIN, SPAWN.PUDDLE_MAX);
   }
   if(edge > world.nextOrX){
     const x = world.nextOrX;
     if(!isTooClose(x)) addOr(x);
-    world.nextOrX += rand(CONFIG.SPAWN.OR_MIN, CONFIG.SPAWN.OR_MAX);
+    world.nextOrX += rand(SPAWN.OR_MIN, SPAWN.OR_MAX);
   }
   if(edge > world.nextDanX){
     const x = world.nextDanX;
     if(!isTooClose(x)) addDan(x);
-    world.nextDanX += rand(CONFIG.SPAWN.DAN_MIN, CONFIG.SPAWN.DAN_MAX);
+    world.nextDanX += rand(SPAWN.DAN_MIN, SPAWN.DAN_MAX);
   }
   if(edge > world.nextRingX){
     addRing(world.nextRingX);
-    world.nextRingX += rand(CONFIG.SPAWN.RING_MIN, CONFIG.SPAWN.RING_MAX);
+    world.nextRingX += rand(SPAWN.RING_MIN, SPAWN.RING_MAX);
   }
 }
 
@@ -1513,10 +1659,9 @@ async function boot(){
 
     if(overlay) overlay.style.display="none";
 
-    initRace(0);
-
     state.lastTime = performance.now();
-    state.phase = "brief";
+    state.phase = "menu";
+    showCupSelect();
     requestAnimationFrame(loop);
   }catch(e){
     if(overlay){
