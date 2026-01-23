@@ -13,7 +13,7 @@
 (() => {
 "use strict";
 
-const VERSION = "v6.8.3-cup-startfix";
+const VERSION = "v6.8.4-starttapfix";
 
 /* =======================
    DOM
@@ -468,7 +468,7 @@ function ensureCupModal(){
     b.style.background = "rgba(255,255,255,0.10)";
     b.style.color = "#fff";
     b.style.font = "900 15px system-ui";
-    b.addEventListener("pointerdown", ()=>{
+    bindTap(b, ()=>{
       selectCup(c.id);
     });
     body.appendChild(b);
@@ -557,6 +557,25 @@ function resizeCanvas(){
    INPUT
 ======================= */
 const input = { jump:false, boost:false };
+
+// Tap helper (iOS/Safari safety): pointerdown + touchstart + click
+function bindTap(el, fn){
+  if(!el) return;
+  let fired = false;
+  const call = (e)=>{
+    if(fired) return;
+    fired = true;
+    try{ e?.preventDefault?.(); }catch(_e){}
+    try{ e?.stopPropagation?.(); }catch(_e){}
+    fn();
+    // reset next tick so repeated taps work
+    setTimeout(()=>{ fired = false; }, 0);
+  };
+  el.addEventListener("pointerdown", call, { passive:false });
+  el.addEventListener("touchstart", call, { passive:false });
+  el.addEventListener("click", call, { passive:false });
+}
+
 
 btnJump?.addEventListener("pointerdown", ()=>{ input.jump = true; });
 btnBoost?.addEventListener("pointerdown", ()=>{ input.boost = true; });
@@ -1606,17 +1625,17 @@ function showResult(){
   if(resultModal) resultModal.style.display = "flex";
 }
 
-rmRetry?.addEventListener("pointerdown", ()=>{
+bindTap(rmRetry, ()=>{
   hideResult();
   initRace(state.raceIndex);
 });
-rmNext?.addEventListener("pointerdown", ()=>{
+bindTap(rmNext, ()=>{
   hideResult();
   const nextIdx = (state.raceIndex < CONFIG.RACES.length - 1) ? (state.raceIndex + 1) : 0;
   initRace(nextIdx);
 });
 
-bmStart?.addEventListener("pointerdown", ()=>{
+bindTap(bmStart, ()=>{
   hideBrief();
   state.countdown = 3;
   state.phase = "countdown";
