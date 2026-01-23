@@ -13,7 +13,7 @@
 (() => {
 "use strict";
 
-const VERSION = "v6.6.3-rail-drawfix";
+const VERSION = "v6.7-brief-goal-ghost";
 
 /* =======================
    DOM
@@ -282,6 +282,81 @@ const rmList  = document.getElementById("rmList");
 const rmRetry = document.getElementById("rmRetry");
 const rmNext  = document.getElementById("rmNext");
 
+/* ===== Pre-race BRIEF MODAL ===== */
+function ensureBriefModal(){
+  let modal = document.getElementById("jsBriefModal");
+  if(modal) return modal;
+
+  modal = document.createElement("div");
+  modal.id = "jsBriefModal";
+  modal.style.position = "fixed";
+  modal.style.left = "0";
+  modal.style.top = "0";
+  modal.style.right = "0";
+  modal.style.bottom = "0";
+  modal.style.zIndex = "99997";
+  modal.style.display = "none";
+  modal.style.alignItems = "center";
+  modal.style.justifyContent = "center";
+  modal.style.background = "rgba(0,0,0,0.35)";
+  modal.style.backdropFilter = "blur(6px)";
+  modal.style.pointerEvents = "auto";
+
+  const card = document.createElement("div");
+  card.style.width = "min(92vw, 420px)";
+  card.style.borderRadius = "18px";
+  card.style.background = "rgba(10,12,18,0.92)";
+  card.style.border = "1px solid rgba(255,255,255,0.10)";
+  card.style.boxShadow = "0 20px 60px rgba(0,0,0,0.55)";
+  card.style.overflow = "hidden";
+
+  const body = document.createElement("div");
+  body.style.padding = "18px 16px 14px";
+  body.style.textAlign = "center";
+  body.innerHTML = `
+    <div id="bmLine1" style="font:900 26px system-ui;color:#fff;letter-spacing:0.5px;">距離 0m</div>
+    <div id="bmLine2" style="margin-top:10px;font:800 16px system-ui;color:rgba(255,255,255,0.90);">準備中</div>
+  `;
+
+  const btns = document.createElement("div");
+  btns.style.display = "flex";
+  btns.style.gap = "10px";
+  btns.style.padding = "12px";
+  btns.style.borderTop = "1px solid rgba(255,255,255,0.10)";
+  btns.innerHTML = `
+    <button id="bmStart" class="primary" style="
+      flex:1;padding:12px 10px;border:0;border-radius:14px;
+      font:900 15px system-ui;color:#fff;
+      background:rgba(0,0,0,0.60);border:1px solid rgba(255,255,255,0.18);
+    ">START</button>
+  `;
+
+  card.appendChild(body);
+  card.appendChild(btns);
+  modal.appendChild(card);
+  document.body.appendChild(modal);
+  return modal;
+}
+const briefModal = ensureBriefModal();
+const bmLine1 = document.getElementById("bmLine1");
+const bmLine2 = document.getElementById("bmLine2");
+const bmStart = document.getElementById("bmStart");
+
+function hideBrief(){
+  if(briefModal) briefModal.style.display = "none";
+}
+function showBrief(){
+  const race = CONFIG.RACES[state.raceIndex] || CONFIG.RACES[0] || { goal:600, survive:5 };
+  const isLast = (state.raceIndex === (CONFIG.RACES.length - 1));
+  if(bmLine1) bmLine1.textContent = `距離 ${race.goal}m`;
+  if(bmLine2){
+    bmLine2.textContent = isLast
+      ? "ラストレース、優勝目指して頑張ろう🥇"
+      : `${race.survive}位以内にゴールすればクリア！`;
+  }
+  if(briefModal) briefModal.style.display = "flex";
+}
+
 /* ===== Version badge in control area ===== */
 function attachVersionBadge(){
   try{
@@ -522,8 +597,9 @@ function initRace(idx){
   state.stockTimer = 0;
 
   state.countdown = 3;
-  state.phase = "countdown";
+  state.phase = "brief";
   hideResult();
+  showBrief();
 
   resetWorldForRace();
   resetGround();
@@ -1122,6 +1198,13 @@ function updateCountdown(dt){
    UPDATE
 ======================= */
 function update(dt){
+  if(state.phase === "brief"){
+    // wait for START
+    updateRank();
+    updateTop8();
+    updateStockBar();
+    return;
+  }
   if(state.phase === "countdown"){
     updateCountdown(dt);
     updateRank();
@@ -1186,7 +1269,27 @@ function drawStage(){
 }
 
 function drawObjects(){
+  // goal line (clear & visible)
+  const race = CONFIG.RACES[state.raceIndex] || CONFIG.RACES[0] || { goal:600 };
+  const goalX = race.goal * CONFIG.PX_PER_M;
+  const gx = goalX - state.cameraX;
+  if(gx > -40 && gx < CONFIG.LOGICAL_W + 40){
+    // thick base line
+    ctx.fillStyle = "rgba(255,255,255,0.92)";
+    ctx.fillRect(gx - 2, 0, 4, world.groundY + world.groundH);
+    // checker overlay
+    const step = 12;
+    for(let y=0; y<world.groundY; y+=step){
+      ctx.fillStyle = ((y/step)|0) % 2 ? "rgba(0,0,0,0.75)" : "rgba(255,255,255,0.92)";
+      ctx.fillRect(gx - 10, y, 8, step);
+    }
+    // small flag cap
+    ctx.fillStyle = "rgba(255,255,255,0.92)";
+    ctx.fillRect(gx - 10, 0, 20, 6);
+  }
+
   // puddle
+
   ctx.fillStyle = "rgba(120,190,255,0.5)";
   for(const p of world.puddles){
     const sx = p.x - state.cameraX;
@@ -1259,6 +1362,11 @@ function drawRunner(r){
   ctx.ellipse(sx + r.w/2, world.groundY + 5, r.w*0.35, 5, 0, 0, Math.PI*2);
   ctx.fill();
 
+  // ghost alpha
+  const a = r.isPlayer ? 1 : 0.55;
+  ctx.save();
+  ctx.globalAlpha = a;
+
   // board
   if(IMAGES.board){
     ctx.drawImage(IMAGES.board, sx - r.w*0.05, r.y + r.h*0.65, r.w*1.1, r.h*0.45);
@@ -1269,6 +1377,8 @@ function drawRunner(r){
   if(body){
     ctx.drawImage(body, sx, r.y, r.w, r.h);
   }
+
+  ctx.restore();
 
   // player label
   if(r.isPlayer){
@@ -1357,6 +1467,12 @@ rmNext?.addEventListener("pointerdown", ()=>{
   initRace(nextIdx);
 });
 
+bmStart?.addEventListener("pointerdown", ()=>{
+  hideBrief();
+  state.countdown = 3;
+  state.phase = "countdown";
+});
+
 /* =======================
    LOOP
 ======================= */
@@ -1400,7 +1516,7 @@ async function boot(){
     initRace(0);
 
     state.lastTime = performance.now();
-    state.phase = "countdown";
+    state.phase = "brief";
     requestAnimationFrame(loop);
   }catch(e){
     if(overlay){
