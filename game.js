@@ -13,7 +13,7 @@
 (() => {
 "use strict";
 
-const VERSION = "v6.8.2-cupfix";
+const VERSION = "v6.8.3-cup-startfix";
 
 /* =======================
    DOM
@@ -207,7 +207,7 @@ function ensureResultModal(){
   modal.style.top = "0";
   modal.style.right = "0";
   modal.style.bottom = "0";
-  modal.style.zIndex = "99999";
+  modal.style.zIndex = "100006";
   modal.style.display = "none";
   modal.style.alignItems = "center";
   modal.style.justifyContent = "center";
@@ -294,7 +294,7 @@ function ensureBriefModal(){
   modal.style.top = "0";
   modal.style.right = "0";
   modal.style.bottom = "0";
-  modal.style.zIndex = "99997";
+  modal.style.zIndex = "100005";
   modal.style.display = "none";
   modal.style.alignItems = "center";
   modal.style.justifyContent = "center";
@@ -1345,6 +1345,9 @@ function updateCountdown(dt){
 ======================= */
 function update(dt){
   if(state.phase === "brief"){
+    // FAILSAFE_BRIEF: ensure the brief modal is actually visible
+    try{ if(briefModal && briefModal.style.display !== "flex") showBrief(); }catch(e){}
+
     // wait for START
     updateRank();
     updateTop8();
