@@ -1,19 +1,16 @@
-// game.js  (FULL)  MOB STREET - 1P RUN
-// VERSION: v6.8.2-cupfix (FULL)
-// Fix / Improve (based on your feedback):
-// - Platform "snap"/吸い付き防止: dan / track(or) / halfpipe は「上から着地した時だけ乗る」
-// - Jump中(vy<0)は絶対に platform enter しない（横当たりも乗らない）
-// - Jump開始時は onPipe/onDan/onOr を解除（乗り状態から自然に離れる）
-// - dan / pipe / track: 乗っている間は絵（プロファイル）に沿って追従 + 加速
-// - cleanup: オブジェ削除は「完全に画面外（左）+ margin」かつ「誰も参照していない」時だけ
-// - 既存仕様維持: cover+bottom-align / version badge / top8 / result modal / ring / puddle / stocks
+// game.js (FULL) MOB STREET - 1P RUN
+// VERSION: v6.8.5-cupstartfix (FULL)
+// Fix:
+// - Cup選択(menu) → initRace() → brief へ必ず遷移（menuのまま固まるのを防止）
+// - START/選択ボタンを pointerdown + touchstart + click で拾う（iOS取りこぼし対策）
+// - update() が menu/brief/countdown/run/result を確実に処理
 //
-// NOTE: HTML/CSSは変更しません（既存のID/構造を前提）。
+// NOTE: HTML/CSSは変更しません（既存のID/構造を前提）
 
 (() => {
 "use strict";
 
-const VERSION = "v6.8.4-starttapfix";
+const VERSION = "v6.8.5-cupstartfix";
 
 /* =======================
    DOM
@@ -41,6 +38,23 @@ const btnItem  = document.getElementById("btnJumpBoost"); // 今は無効
   document.documentElement.style.webkitUserSelect = "none";
   document.documentElement.style.userSelect = "none";
 })();
+
+/* =======================
+   SAFE TAP BIND (iOS)
+======================= */
+function bindTap(el, fn){
+  if(!el) return;
+  const handler = (e)=>{
+    try{ e.preventDefault(); }catch(_){}
+    try{ e.stopPropagation(); }catch(_){}
+    fn(e);
+  };
+  // pointerdownが使える環境
+  el.addEventListener("pointerdown", handler, { passive:false });
+  // iOS取りこぼし保険
+  el.addEventListener("touchstart", handler, { passive:false });
+  el.addEventListener("click", handler, { passive:false });
+}
 
 /* =======================
    CONFIG
@@ -123,10 +137,32 @@ const CONFIG = {
   // Cleanup margins (visual safety)
   CLEANUP_MARGIN: 140,
 
-  RACES: [
-    { name:"EASY",   goal:  600, start:26, survive:16 },
-    { name:"NORMAL", goal: 1000, start:16, survive: 6 },
-    { name:"HARD",   goal: 1200, start: 8, survive: 1 }
+  // Cup presets（= レースセット）
+  CUPS: [
+    {
+      name: "EASY CUP",
+      races: [
+        { name:"EASY",   goal:  600, start:26, survive:16 },
+        { name:"NORMAL", goal: 1000, start:16, survive: 6 },
+        { name:"HARD",   goal: 1200, start: 8, survive: 1 }
+      ]
+    },
+    {
+      name: "SHORT CUP",
+      races: [
+        { name:"SPRINT", goal:  450, start:24, survive:14 },
+        { name:"MID",    goal:  800, start:16, survive: 6 },
+        { name:"FINAL",  goal: 1050, start:10, survive: 2 }
+      ]
+    },
+    {
+      name: "HARD CUP",
+      races: [
+        { name:"HARD",   goal: 1200, start:12, survive: 3 },
+        { name:"EX",     goal: 1500, start:10, survive: 2 },
+        { name:"HELL",   goal: 1800, start: 8, survive: 1 }
+      ]
+    }
   ]
 };
 
@@ -207,7 +243,7 @@ function ensureResultModal(){
   modal.style.top = "0";
   modal.style.right = "0";
   modal.style.bottom = "0";
-  modal.style.zIndex = "100006";
+  modal.style.zIndex = "99999";
   modal.style.display = "none";
   modal.style.alignItems = "center";
   modal.style.justifyContent = "center";
@@ -282,6 +318,92 @@ const rmList  = document.getElementById("rmList");
 const rmRetry = document.getElementById("rmRetry");
 const rmNext  = document.getElementById("rmNext");
 
+/* ===== Cup Select MODAL ===== */
+function ensureCupModal(){
+  let modal = document.getElementById("jsCupModal");
+  if(modal) return modal;
+
+  modal = document.createElement("div");
+  modal.id = "jsCupModal";
+  modal.style.position = "fixed";
+  modal.style.left = "0";
+  modal.style.top = "0";
+  modal.style.right = "0";
+  modal.style.bottom = "0";
+  modal.style.zIndex = "99996";
+  modal.style.display = "none";
+  modal.style.alignItems = "center";
+  modal.style.justifyContent = "center";
+  modal.style.background = "rgba(0,0,0,0.35)";
+  modal.style.backdropFilter = "blur(6px)";
+  modal.style.pointerEvents = "auto";
+
+  const card = document.createElement("div");
+  card.style.width = "min(92vw, 420px)";
+  card.style.borderRadius = "18px";
+  card.style.background = "rgba(10,12,18,0.92)";
+  card.style.border = "1px solid rgba(255,255,255,0.10)";
+  card.style.boxShadow = "0 20px 60px rgba(0,0,0,0.55)";
+  card.style.overflow = "hidden";
+
+  const body = document.createElement("div");
+  body.style.padding = "16px 14px 14px";
+  body.innerHTML = `
+    <div style="font:900 20px system-ui;color:#fff;text-align:center;">CUP SELECT</div>
+    <div id="cupList" style="margin-top:12px;display:flex;flex-direction:column;gap:10px;"></div>
+    <div style="margin-top:10px;font:600 12px system-ui;color:rgba(255,255,255,0.60);text-align:center;">
+      カップを選ぶとレース説明に進みます
+    </div>
+  `;
+
+  const style = document.createElement("style");
+  style.textContent = `
+    #cupList button{
+      width:100%;
+      padding:14px 12px;
+      border:0;
+      border-radius:14px;
+      font:900 14px system-ui;
+      color:#fff;
+      background:rgba(255,255,255,0.10);
+      border:1px solid rgba(255,255,255,0.12);
+    }
+    #cupList button:active{ transform:scale(0.99); }
+  `;
+  document.head.appendChild(style);
+
+  card.appendChild(body);
+  modal.appendChild(card);
+  document.body.appendChild(modal);
+  return modal;
+}
+const cupModal = ensureCupModal();
+const cupList = document.getElementById("cupList");
+
+function showCupSelect(){
+  if(!cupModal) return;
+  state.phase = "menu";
+  if(cupList){
+    cupList.innerHTML = "";
+    for(let i=0;i<CONFIG.CUPS.length;i++){
+      const cup = CONFIG.CUPS[i];
+      const b = document.createElement("button");
+      b.textContent = cup.name;
+      bindTap(b, ()=>{
+        state.cupIndex = i;
+        hideCupSelect();
+        // 重要：menuのまま固まらないよう必ず initRaceへ
+        initRace(0);
+      });
+      cupList.appendChild(b);
+    }
+  }
+  cupModal.style.display = "flex";
+}
+function hideCupSelect(){
+  if(cupModal) cupModal.style.display = "none";
+}
+
 /* ===== Pre-race BRIEF MODAL ===== */
 function ensureBriefModal(){
   let modal = document.getElementById("jsBriefModal");
@@ -294,7 +416,7 @@ function ensureBriefModal(){
   modal.style.top = "0";
   modal.style.right = "0";
   modal.style.bottom = "0";
-  modal.style.zIndex = "100005";
+  modal.style.zIndex = "99997";
   modal.style.display = "none";
   modal.style.alignItems = "center";
   modal.style.justifyContent = "center";
@@ -346,8 +468,9 @@ function hideBrief(){
   if(briefModal) briefModal.style.display = "none";
 }
 function showBrief(){
-  const race = CONFIG.RACES[state.raceIndex] || CONFIG.RACES[0] || { goal:600, survive:5 };
-  const isLast = (state.raceIndex === (CONFIG.RACES.length - 1));
+  const races = (CONFIG.CUPS[state.cupIndex]?.races) || CONFIG.CUPS[0].races;
+  const race = races[state.raceIndex] || races[0] || { goal:600, survive:5 };
+  const isLast = (state.raceIndex === (races.length - 1));
   if(bmLine1) bmLine1.textContent = `距離 ${race.goal}m`;
   if(bmLine2){
     bmLine2.textContent = isLast
@@ -356,132 +479,6 @@ function showBrief(){
   }
   if(briefModal) briefModal.style.display = "flex";
 }
-
-/* =======================
-   CUP SELECT (DOM)
-   - HTML/CSSは触らずJSで注入
-   - 今後 CUPS 配列を増やせば拡張可
-======================= */
-const CUPS = [
-  {
-    id: "mob",
-    name: "MOB CUP",
-    namedGhosts: [
-      {name:"フレンチ",wr:0.60},
-      {name:"レッド",wr:0.70},
-      {name:"レッドブルー",wr:0.90},
-      {name:"ブラック",wr:0.85},
-      {name:"ホワイト",wr:0.75}
-    ],
-    // 各レースのスポーン傾向（CONFIG.SPAWN を上書き）
-    spawnByRace: [
-      {}, // EASY: 既存のまま
-      {}, // NORMAL
-      {}  // HARD
-    ]
-  },
-  {
-    id: "mikan",
-    name: "mikan CUP",
-    namedGhosts: [
-      {name:"みかん",wr:0.95},
-      {name:"ハリネズミ",wr:0.80},
-      {name:"ネコクー",wr:0.90},
-      {name:"ドオー",wr:0.90},
-      {name:"モスラ",wr:0.80}
-    ],
-    // easy=レール中心 / normal=ハーフパイプ中心 / hard=dan+トラック中心
-    spawnByRace: [
-      { // EASY
-        RAIL_MIN: 240, RAIL_MAX: 420,
-        PIPE_MIN: 1400, PIPE_MAX: 2100,
-        OR_MIN:   1400, OR_MAX:   2200,
-        DAN_MIN:  1400, DAN_MAX:  2200
-      },
-      { // NORMAL
-        RAIL_MIN: 560, RAIL_MAX: 900,
-        PIPE_MIN: 620, PIPE_MAX: 980,
-        OR_MIN:   1400, OR_MAX:  2200,
-        DAN_MIN:  1400, DAN_MAX: 2200
-      },
-      { // HARD
-        RAIL_MIN: 700, RAIL_MAX: 1100,
-        PIPE_MIN: 1400, PIPE_MAX: 2200,
-        OR_MIN:   520, OR_MAX:   860,
-        DAN_MIN:  520, DAN_MAX:  860
-      }
-    ]
-  }
-];
-
-function getCupById(id){
-  return CUPS.find(c=>c.id===id) || CUPS[0];
-}
-
-function ensureCupModal(){
-  let modal = document.getElementById("jsCupModal");
-  if(modal) return modal;
-
-  modal = document.createElement("div");
-  modal.id = "jsCupModal";
-  modal.style.position = "fixed";
-  modal.style.left = "0";
-  modal.style.top = "0";
-  modal.style.right = "0";
-  modal.style.bottom = "0";
-  modal.style.zIndex = "1000000";
-  modal.style.display = "none";
-  modal.style.alignItems = "center";
-  modal.style.justifyContent = "center";
-  modal.style.background = "rgba(0,0,0,0.55)";
-  modal.style.backdropFilter = "blur(6px)";
-  modal.style.pointerEvents = "auto";
-
-  const card = document.createElement("div");
-  card.style.width = "min(92vw, 420px)";
-  card.style.borderRadius = "16px";
-  card.style.background = "rgba(10,12,18,0.92)";
-  card.style.border = "1px solid rgba(255,255,255,0.10)";
-  card.style.boxShadow = "0 20px 60px rgba(0,0,0,0.55)";
-  card.style.overflow = "hidden";
-
-  const head = document.createElement("div");
-  head.style.padding = "14px";
-  head.style.borderBottom = "1px solid rgba(255,255,255,0.10)";
-  head.innerHTML = `
-    <div style="font:900 16px system-ui;color:#fff;">SELECT CUP</div>
-    <div style="margin-top:4px;font:600 12px system-ui;color:rgba(255,255,255,0.70);">大会を選択してください</div>
-  `;
-
-  const body = document.createElement("div");
-  body.style.padding = "12px";
-  body.style.display = "grid";
-  body.style.gap = "10px";
-
-  for(const c of CUPS){
-    const b = document.createElement("button");
-    b.textContent = c.name;
-    b.style.width = "100%";
-    b.style.padding = "14px 12px";
-    b.style.borderRadius = "14px";
-    b.style.border = "1px solid rgba(255,255,255,0.16)";
-    b.style.background = "rgba(255,255,255,0.10)";
-    b.style.color = "#fff";
-    b.style.font = "900 15px system-ui";
-    bindTap(b, ()=>{
-      selectCup(c.id);
-    });
-    body.appendChild(b);
-  }
-
-  card.appendChild(head);
-  card.appendChild(body);
-  modal.appendChild(card);
-  document.body.appendChild(modal);
-  return modal;
-}
-
-let cupModal = null;
 
 /* ===== Version badge in control area ===== */
 function attachVersionBadge(){
@@ -558,25 +555,6 @@ function resizeCanvas(){
 ======================= */
 const input = { jump:false, boost:false };
 
-// Tap helper (iOS/Safari safety): pointerdown + touchstart + click
-function bindTap(el, fn){
-  if(!el) return;
-  let fired = false;
-  const call = (e)=>{
-    if(fired) return;
-    fired = true;
-    try{ e?.preventDefault?.(); }catch(_e){}
-    try{ e?.stopPropagation?.(); }catch(_e){}
-    fn();
-    // reset next tick so repeated taps work
-    setTimeout(()=>{ fired = false; }, 0);
-  };
-  el.addEventListener("pointerdown", call, { passive:false });
-  el.addEventListener("touchstart", call, { passive:false });
-  el.addEventListener("click", call, { passive:false });
-}
-
-
 btnJump?.addEventListener("pointerdown", ()=>{ input.jump = true; });
 btnBoost?.addEventListener("pointerdown", ()=>{ input.boost = true; });
 
@@ -628,6 +606,7 @@ function updateStockBar(){
 ======================= */
 const state = {
   phase:"loading",
+  cupIndex:0,
   raceIndex:0,
 
   time:0,
@@ -646,22 +625,8 @@ const state = {
 
   rank:1,
   rankText:"",
-  top8Text:"",
-
-  cupId:"mob"
+  top8Text:""
 };
-
-function selectCup(cupId){
-  state.cupId = (getCupById(cupId).id);
-  if(cupModal) cupModal.style.display = "none";
-  // レース開始（最初はEASY）
-  initRace(0);
-}
-
-function showCupSelect(){
-  if(!cupModal) cupModal = ensureCupModal();
-  if(cupModal) cupModal.style.display = "flex";
-}
 
 function createRunner(name,isPlayer,winRate){
   return {
@@ -693,26 +658,23 @@ function createRunner(name,isPlayer,winRate){
     finishTime:Infinity,
 
     aiCd: rand(0.20,0.55),
-    aiBoostCd: rand(0.0, CONFIG.AI_BOOST_COOLDOWN)
+    aiBoostCd: rand(0.0, CONFIG.AI_BOOST_COOLDOWN),
+
+    prevY:0
   };
 }
 
 /* =======================
    RACE / GHOSTS
 ======================= */
-
+const NAMED_GHOSTS = [
+  {name:"フレンチ",wr:0.60},
+  {name:"レッド",wr:0.70},
+  {name:"レッドブルー",wr:0.90},
+  {name:"ブラック",wr:0.85},
+  {name:"ホワイト",wr:0.75}
+];
 const LETTERS = "ABCDEFGHIJKLMNOPQRST".split("");
-
-function getNamedGhosts(){
-  return getCupById(state.cupId).namedGhosts || [];
-}
-
-function getSpawnOverrides(){
-  const cup = getCupById(state.cupId);
-  const byRace = cup.spawnByRace || [];
-  return byRace[state.raceIndex] || {};
-}
-
 
 function resetRunner(r){
   r.x=0; r.y=0; r.vy=0;
@@ -729,17 +691,23 @@ function resetRunner(r){
 
   r.aiCd = rand(0.20,0.55);
   r.aiBoostCd = rand(0.0, CONFIG.AI_BOOST_COOLDOWN);
+  r.prevY = 0;
 }
 
-function safeRaceIndex(idx){
-  const n = Array.isArray(CONFIG.RACES) ? CONFIG.RACES.length : 0;
+function safeRaceIndex(idx, races){
+  const n = Array.isArray(races) ? races.length : 0;
   if(n <= 0) return 0;
   if(!Number.isFinite(idx)) return 0;
   return clamp(Math.floor(idx), 0, n-1);
 }
 
+function getRaces(){
+  return (CONFIG.CUPS[state.cupIndex]?.races) || CONFIG.CUPS[0].races;
+}
+
 function initRace(idx){
-  const ri = safeRaceIndex(idx);
+  const races = getRaces();
+  const ri = safeRaceIndex(idx, races);
   state.raceIndex = ri;
 
   state.runners.length = 0;
@@ -749,10 +717,10 @@ function initRace(idx){
   state.runners.push(player);
   state.playerIndex = 0;
 
-  for(const g of getNamedGhosts()) state.runners.push(createRunner(g.name,false,g.wr));
+  for(const g of NAMED_GHOSTS) state.runners.push(createRunner(g.name,false,g.wr));
   for(const l of LETTERS) state.runners.push(createRunner(l,false,0.30));
 
-  const race = CONFIG.RACES[ri] || CONFIG.RACES[0] || { name:"EASY", goal:600, start:10, survive:5 };
+  const race = races[ri] || races[0] || { name:"EASY", goal:600, start:10, survive:5 };
   state.runners = state.runners.slice(0, race.start);
 
   for(const r of state.runners) resetRunner(r);
@@ -775,6 +743,7 @@ function initRace(idx){
     r.y = world.groundY - r.h;
     r.vy = 0;
     r.onGround = true;
+    r.prevY = r.y;
   }
 
   state.time = 0;
@@ -862,36 +831,35 @@ function isTooClose(x){
 
 function spawnWorld(camX){
   const edge = camX + CONFIG.LOGICAL_W;
-  const SPAWN = Object.assign({}, CONFIG.SPAWN, getSpawnOverrides());
 
   if(edge > world.nextRailX){
     const x = world.nextRailX;
     if(!isTooClose(x)) addRail(x);
-    world.nextRailX += rand(SPAWN.RAIL_MIN, SPAWN.RAIL_MAX);
+    world.nextRailX += rand(CONFIG.SPAWN.RAIL_MIN, CONFIG.SPAWN.RAIL_MAX);
   }
   if(edge > world.nextPipeX){
     const x = world.nextPipeX;
     if(!isTooClose(x)) addPipe(x);
-    world.nextPipeX += rand(SPAWN.PIPE_MIN, SPAWN.PIPE_MAX);
+    world.nextPipeX += rand(CONFIG.SPAWN.PIPE_MIN, CONFIG.SPAWN.PIPE_MAX);
   }
   if(edge > world.nextPuddleX){
     const x = world.nextPuddleX;
     if(!isTooClose(x)) addPuddle(x);
-    world.nextPuddleX += rand(SPAWN.PUDDLE_MIN, SPAWN.PUDDLE_MAX);
+    world.nextPuddleX += rand(CONFIG.SPAWN.PUDDLE_MIN, CONFIG.SPAWN.PUDDLE_MAX);
   }
   if(edge > world.nextOrX){
     const x = world.nextOrX;
     if(!isTooClose(x)) addOr(x);
-    world.nextOrX += rand(SPAWN.OR_MIN, SPAWN.OR_MAX);
+    world.nextOrX += rand(CONFIG.SPAWN.OR_MIN, CONFIG.SPAWN.OR_MAX);
   }
   if(edge > world.nextDanX){
     const x = world.nextDanX;
     if(!isTooClose(x)) addDan(x);
-    world.nextDanX += rand(SPAWN.DAN_MIN, SPAWN.DAN_MAX);
+    world.nextDanX += rand(CONFIG.SPAWN.DAN_MIN, CONFIG.SPAWN.DAN_MAX);
   }
   if(edge > world.nextRingX){
     addRing(world.nextRingX);
-    world.nextRingX += rand(SPAWN.RING_MIN, SPAWN.RING_MAX);
+    world.nextRingX += rand(CONFIG.SPAWN.RING_MIN, CONFIG.SPAWN.RING_MAX);
   }
 }
 
@@ -983,21 +951,15 @@ function cleanupArray(arr){
   return arr.filter(o => {
     const offLeft = (o.x + o.w) < leftLimit;
     if(!offLeft) return true;
-    // offscreen left: keep if any runner is still referencing it
     return anyRunnerRef(o);
   });
 }
 function cleanupWorld(){
-  // rails are never referenced; only offscreen cleanup
   const leftLimit = state.cameraX - CONFIG.CLEANUP_MARGIN;
   world.rails = world.rails.filter(o => (o.x + o.w) >= leftLimit);
-
-  // referenced platforms
   world.pipes = cleanupArray(world.pipes);
   world.dans  = cleanupArray(world.dans);
   world.ors   = cleanupArray(world.ors);
-
-  // simple objects
   world.puddles = world.puddles.filter(p => (p.x + p.w) >= leftLimit);
   world.rings   = world.rings.filter(r => (r.x + 40) >= leftLimit);
 }
@@ -1019,7 +981,6 @@ function clearPlatforms(r){
   r.onOr   = false; r.orRef   = null;
 }
 function doJump(r){
-  // ジャンプ開始＝platformから離れる（吸い付き防止の肝）
   clearPlatforms(r);
 
   if(r.onGround){
@@ -1089,29 +1050,23 @@ function pipeTopY(pipe, xCenter){
    LANDING TEST (上から着地のみ)
 ======================= */
 function tryLandOnPlatform(r, idx, plat, topY, kind){
-  // kind: "rail"|"or"|"dan"|"pipe"
-  // 禁止: ジャンプ上昇中
   if(r.vy < 0) return false;
 
   const prevBottom = r.prevY + r.h;
   const curBottom  = r.y + r.h;
 
-  // "上から"：前フレームの足元が上面より上にある
   if(prevBottom > topY + CONFIG.LAND_EPS) return false;
 
-  // 今フレームで上面を跨いだ（または近い）
   const near = Math.abs(curBottom - topY) <= CONFIG.LAND_SNAP;
   const crossed = curBottom >= (topY - CONFIG.LAND_EPS);
   if(!(near || crossed)) return false;
 
-  // 着地
   r.y = topY - r.h;
   r.vy = 0;
   r.onGround = true;
   r.jumps = 0;
 
   if(kind === "rail"){
-    // 乗ると少し加速
     r.boostPower = Math.max(r.boostPower, 60);
     r.boostTimer = Math.max(r.boostTimer, 0.15);
   }else if(kind === "or"){
@@ -1131,7 +1086,8 @@ function tryLandOnPlatform(r, idx, plat, topY, kind){
    RUN UPDATE
 ======================= */
 function updateRun(dt){
-  const race = CONFIG.RACES[state.raceIndex] || CONFIG.RACES[0] || { name:"EASY", goal:600, start:10, survive:5 };
+  const races = getRaces();
+  const race = races[state.raceIndex] || races[0] || { name:"EASY", goal:600, start:10, survive:5 };
   const player = state.runners[state.playerIndex];
 
   // camera
@@ -1150,7 +1106,6 @@ function updateRun(dt){
     const r = state.runners[idx];
     if(r.finished) continue;
 
-    // cache prev y for landing test
     r.prevY = r.y;
 
     /* --- AI --- */
@@ -1194,14 +1149,11 @@ function updateRun(dt){
       speed *= 0.75;
     }
 
-    // platform accel (while riding)
     if(r.onOr)  speed += CONFIG.TRACK_ACCEL_ADD;
     if(r.onDan) speed += CONFIG.DAN_ACCEL_ADD;
 
-    // halfpipe accel is computed during follow
     let addPipeAccel = 0;
 
-    /* --- PLATFORM FOLLOW (only while still inside range) --- */
     const cx = r.x + r.w*0.5;
 
     if(r.onOr && r.orRef){
@@ -1239,25 +1191,20 @@ function updateRun(dt){
         r.vy = 0;
         r.onGround = true;
         r.jumps = 0;
-
         addPipeAccel = CONFIG.PIPE_PROFILE.BASE_ON_PIPE_ADD + pf.slopeAbs01 * CONFIG.PIPE_PROFILE.SLOPE_ADD;
       }
     }
 
-    // Apply pipe accel after follow update
     speed += addPipeAccel;
 
-    /* --- GRAVITY (only if not riding any platform) --- */
     if(!r.onPipe && !r.onDan && !r.onOr){
       r.vy += CONFIG.GRAVITY * dt;
       r.vy = Math.min(r.vy, CONFIG.MAX_FALL_V);
       r.y += r.vy * dt;
     }
 
-    /* --- MOVE X --- */
     r.x += speed * dt;
 
-    /* --- GROUND --- */
     if(!r.onPipe && !r.onDan && !r.onOr){
       if(r.y + r.h >= world.groundY){
         r.y = world.groundY - r.h;
@@ -1269,16 +1216,12 @@ function updateRun(dt){
       }
     }
 
-    /* --- PLATFORM LANDING (上から着地のみ) --- */
-    // Only try landing if not already riding (prevents snap after follow)
     if(!r.onPipe && !r.onDan && !r.onOr){
-      // RAIL
       for(const rail of world.rails){
         if(rectHit(r.x, r.y, r.w, r.h, rail.x, rail.y, rail.w, rail.h)){
           if(tryLandOnPlatform(r, idx, rail, rail.y, "rail")) break;
         }
       }
-      // TRACK (or)
       if(!r.onOr){
         for(const o of world.ors){
           if(rectHit(r.x, r.y, r.w, r.h, o.x, o.y, o.w, o.h)){
@@ -1286,7 +1229,6 @@ function updateRun(dt){
           }
         }
       }
-      // DAN (sloped top)
       if(!r.onDan){
         for(const d of world.dans){
           if(rectHit(r.x, r.y, r.w, r.h, d.x, d.y, d.w, d.h)){
@@ -1295,7 +1237,6 @@ function updateRun(dt){
           }
         }
       }
-      // PIPE (profile top)
       if(!r.onPipe){
         for(const p of world.pipes){
           if(rectHit(r.x, r.y, r.w, r.h, p.x, p.y, p.w, p.h)){
@@ -1306,14 +1247,12 @@ function updateRun(dt){
       }
     }
 
-    /* --- PUDDLE --- */
     for(const p of world.puddles){
       if(rectHit(r.x, r.y, r.w, r.h, p.x, p.y, p.w, p.h)){
         r.slowTimer = 0.40;
       }
     }
 
-    /* --- RING (runner-specific) --- */
     for(const ring of world.rings){
       if(ring.takenBy.has(idx)) continue;
 
@@ -1330,7 +1269,6 @@ function updateRun(dt){
       }
     }
 
-    /* --- FINISH --- */
     if(!r.finished && (r.x / CONFIG.PX_PER_M) >= race.goal){
       r.finished = true;
       r.finishTime = state.time;
@@ -1343,7 +1281,6 @@ function updateRun(dt){
   updateTop8();
   updateStockBar();
 
-  // survive threshold => result
   if(state.finishedCount >= race.survive){
     showResult();
   }
@@ -1363,11 +1300,14 @@ function updateCountdown(dt){
    UPDATE
 ======================= */
 function update(dt){
+  // 重要：menuを明示処理（何もしない）
+  if(state.phase === "menu"){
+    updateRank();
+    updateTop8();
+    updateStockBar();
+    return;
+  }
   if(state.phase === "brief"){
-    // FAILSAFE_BRIEF: ensure the brief modal is actually visible
-    try{ if(briefModal && briefModal.style.display !== "flex") showBrief(); }catch(e){}
-
-    // wait for START
     updateRank();
     updateTop8();
     updateStockBar();
@@ -1382,6 +1322,13 @@ function update(dt){
   }
   if(state.phase === "run"){
     updateRun(dt);
+    return;
+  }
+  if(state.phase === "result"){
+    // 表示のみ
+    updateRank();
+    updateTop8();
+    updateStockBar();
     return;
   }
 }
@@ -1437,26 +1384,21 @@ function drawStage(){
 }
 
 function drawObjects(){
-  // goal line (clear & visible)
-  const race = CONFIG.RACES[state.raceIndex] || CONFIG.RACES[0] || { goal:600 };
+  const races = getRaces();
+  const race = races[state.raceIndex] || races[0] || { goal:600 };
   const goalX = race.goal * CONFIG.PX_PER_M;
   const gx = goalX - state.cameraX;
   if(gx > -40 && gx < CONFIG.LOGICAL_W + 40){
-    // thick base line
     ctx.fillStyle = "rgba(255,255,255,0.92)";
     ctx.fillRect(gx - 2, 0, 4, world.groundY + world.groundH);
-    // checker overlay
     const step = 12;
     for(let y=0; y<world.groundY; y+=step){
       ctx.fillStyle = ((y/step)|0) % 2 ? "rgba(0,0,0,0.75)" : "rgba(255,255,255,0.92)";
       ctx.fillRect(gx - 10, y, 8, step);
     }
-    // small flag cap
     ctx.fillStyle = "rgba(255,255,255,0.92)";
     ctx.fillRect(gx - 10, 0, 20, 6);
   }
-
-  // puddle
 
   ctx.fillStyle = "rgba(120,190,255,0.5)";
   for(const p of world.puddles){
@@ -1465,7 +1407,6 @@ function drawObjects(){
     ctx.fillRect(sx, p.y, p.w, p.h);
   }
 
-  // rings (player taken -> hidden)
   const ringImg = IMAGES.ring;
   if(ringImg){
     const pi = state.playerIndex;
@@ -1477,7 +1418,6 @@ function drawObjects(){
     }
   }
 
-  // dan
   if(IMAGES.dan){
     for(const d of world.dans){
       const sx = d.x - state.cameraX;
@@ -1486,7 +1426,6 @@ function drawObjects(){
     }
   }
 
-  // track(or)
   if(IMAGES.or){
     for(const o of world.ors){
       const sx = o.x - state.cameraX;
@@ -1495,7 +1434,6 @@ function drawObjects(){
     }
   }
 
-  // pipes
   for(const p of world.pipes){
     const sx = p.x - state.cameraX;
     const m = 260;
@@ -1503,7 +1441,6 @@ function drawObjects(){
     ctx.drawImage(p.img, sx, p.y, p.w, p.h);
   }
 
-  // rails
   if(IMAGES.rail){
     for(const r of world.rails){
       const sx = r.x - state.cameraX;
@@ -1524,23 +1461,19 @@ function drawRunner(r){
   const sx = screenXOf(r);
   if(sx < -120 || sx > CONFIG.LOGICAL_W + 120) return;
 
-  // shadow
   ctx.fillStyle = "rgba(0,0,0,0.25)";
   ctx.beginPath();
   ctx.ellipse(sx + r.w/2, world.groundY + 5, r.w*0.35, 5, 0, 0, Math.PI*2);
   ctx.fill();
 
-  // ghost alpha
   const a = r.isPlayer ? 1 : 0.55;
   ctx.save();
   ctx.globalAlpha = a;
 
-  // board
   if(IMAGES.board){
     ctx.drawImage(IMAGES.board, sx - r.w*0.05, r.y + r.h*0.65, r.w*1.1, r.h*0.45);
   }
 
-  // body
   const body = (r.onGround || r.onPipe || r.onDan || r.onOr) ? IMAGES.pl1 : IMAGES.pl2;
   if(body){
     ctx.drawImage(body, sx, r.y, r.w, r.h);
@@ -1548,7 +1481,6 @@ function drawRunner(r){
 
   ctx.restore();
 
-  // player label
   if(r.isPlayer){
     ctx.font = "10px system-ui";
     ctx.textAlign = "center";
@@ -1577,7 +1509,6 @@ function render(){
   drawStage();
   drawObjects();
 
-  // named ghosts -> player
   for(const r of state.runners){
     if(!r.isPlayer && r.winRate > 0.30) drawRunner(r);
   }
@@ -1600,7 +1531,8 @@ function showResult(){
   updateTop8();
   updateStockBar();
 
-  const race = CONFIG.RACES[state.raceIndex] || CONFIG.RACES[0] || { name:"EASY", goal:600 };
+  const races = getRaces();
+  const race = races[state.raceIndex] || races[0] || { name:"EASY", goal:600 };
   const list = [...state.runners].sort((a,b)=>a.finishTime - b.finishTime);
 
   const me = state.runners[state.playerIndex];
@@ -1631,11 +1563,13 @@ bindTap(rmRetry, ()=>{
 });
 bindTap(rmNext, ()=>{
   hideResult();
-  const nextIdx = (state.raceIndex < CONFIG.RACES.length - 1) ? (state.raceIndex + 1) : 0;
+  const races = getRaces();
+  const nextIdx = (state.raceIndex < races.length - 1) ? (state.raceIndex + 1) : 0;
   initRace(nextIdx);
 });
 
 bindTap(bmStart, ()=>{
+  // 重要：ここが確実に動くように修正（iOSでも拾う）
   hideBrief();
   state.countdown = 3;
   state.phase = "countdown";
@@ -1667,7 +1601,6 @@ async function boot(){
 
     await loadAssets();
 
-    // layout stabilize
     fitCanvasToPlayArea();
     resizeCanvas();
     attachVersionBadge();
@@ -1681,9 +1614,10 @@ async function boot(){
 
     if(overlay) overlay.style.display="none";
 
-    state.lastTime = performance.now();
-    state.phase = "menu";
+    // 起動後は必ずCup選択へ（ここがmenuの出口）
     showCupSelect();
+
+    state.lastTime = performance.now();
     requestAnimationFrame(loop);
   }catch(e){
     if(overlay){
@@ -1708,4 +1642,4 @@ window.addEventListener("resize", ()=>{
 attachVersionBadge();
 boot();
 
-})();
+})(); 
