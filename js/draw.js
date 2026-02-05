@@ -57,7 +57,7 @@
     const state = MOB.state;
     const world = MOB.world;
 
-    // goal line
+    // goal line (clear & readable)
     const race = CONFIG.RACES[state.raceIndex] || CONFIG.RACES[0] || { goal: 600 };
     const goalX = race.goal * CONFIG.PX_PER_M;
     const gx = goalX - state.cameraX;
@@ -200,10 +200,11 @@
     MOB.drawStage(ctx);
     MOB.drawObjects(ctx);
 
-    // named ghosts -> player
+    // draw ALL CPUs first (ghost)
     for (const r of MOB.state.runners) {
-      if (!r.isPlayer && r.winRate > 0.30) MOB.drawRunner(ctx, r);
+      if (!r.isPlayer) MOB.drawRunner(ctx, r);
     }
+    // then player
     MOB.drawRunner(ctx, MOB.state.runners[MOB.state.playerIndex]);
 
     if (MOB.state.phase === "countdown") MOB.drawCountdown(ctx);
