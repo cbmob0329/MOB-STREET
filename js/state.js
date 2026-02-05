@@ -30,9 +30,16 @@
     top8Text: ""
   };
 
-  MOB.createRunner = function createRunner(name, isPlayer, winRate) {
+  MOB.createRunner = function createRunner(name, isPlayer) {
     return {
-      name, isPlayer, winRate,
+      name,
+      isPlayer,
+
+      // CPU params (player uses defaults)
+      tier: isPlayer ? "P" : "B",
+      baseMul: 1.0,
+      boostSkill: 0.0,
+      gimmickSkill: 0.0,
 
       x: 0, y: 0, vy: 0,
       w: CONFIG.PLAYER_SIZE, h: CONFIG.PLAYER_SIZE,
@@ -59,10 +66,16 @@
       finished: false,
       finishTime: Infinity,
 
+      // AI internal timers/state
       aiCd: MOB.rand(0.20, 0.55),
       aiBoostCd: MOB.rand(0.0, CONFIG.AI_BOOST_COOLDOWN),
 
-      prevY: 0
+      prevY: 0,
+
+      // context flags for smarter decisions
+      justLandedKind: "",
+      justLandedT: 0,
+      justSlowedT: 0
     };
   };
 
@@ -84,6 +97,10 @@
     r.aiCd = MOB.rand(0.20, 0.55);
     r.aiBoostCd = MOB.rand(0.0, CONFIG.AI_BOOST_COOLDOWN);
     r.prevY = 0;
+
+    r.justLandedKind = "";
+    r.justLandedT = 0;
+    r.justSlowedT = 0;
   };
 
   MOB.safeRaceIndex = function safeRaceIndex(idx) {
@@ -93,14 +110,66 @@
     return MOB.clamp(Math.floor(idx), 0, n - 1);
   };
 
-  MOB.NAMED_GHOSTS = [
-    { name: "フレンチ", wr: 0.60 },
-    { name: "レッド", wr: 0.70 },
-    { name: "レッドブルー", wr: 0.90 },
-    { name: "ブラック", wr: 0.85 },
-    { name: "ホワイト", wr: 0.75 }
+  // ===== CPU NAMES (確定) =====
+  MOB.CPU_S = [
+    "KAGE-0",
+    "NEON-REX"
   ];
-  MOB.LETTERS = "ABCDEFGHIJKLMNOPQRST".split("");
+  MOB.CPU_A = [
+    "RUSH-FOX",
+    "PIPE-MASTER",
+    "TRACK-LORD"
+  ];
+  MOB.CPU_B = [
+    "ALLEY",
+    "BRICK",
+    "NOISE",
+    "LAMP",
+    "WAVE",
+    "DUST",
+    "SIGN",
+    "CHAIN",
+    "CURB",
+    "SPARK",
+    "FENCE",
+    "RUST",
+    "DRIFT",
+    "GLASS",
+    "SHADOW",
+    "SMOKE",
+    "TUNNEL",
+    "ECHO",
+    "PATCH",
+    "STATIC"
+  ];
+
+  function rangeRand(a, b) { return a + Math.random() * (b - a); }
+
+  MOB.makeCpuProfile = function makeCpuProfile(tier) {
+    // 数値レンジ（確定案）
+    if (tier === "S") {
+      return {
+        tier: "S",
+        baseMul: rangeRand(1.03, 1.06),
+        boostSkill: rangeRand(0.80, 0.95),
+        gimmickSkill: rangeRand(0.75, 0.90),
+      };
+    }
+    if (tier === "A") {
+      return {
+        tier: "A",
+        baseMul: rangeRand(1.00, 1.03),
+        boostSkill: rangeRand(0.55, 0.80),
+        gimmickSkill: rangeRand(0.55, 0.75),
+      };
+    }
+    return {
+      tier: "B",
+      baseMul: rangeRand(0.96, 1.00),
+      boostSkill: rangeRand(0.15, 0.55),
+      gimmickSkill: rangeRand(0.20, 0.55),
+    };
+  };
 
   MOB.updateRank = function updateRank() {
     const state = MOB.state;
@@ -136,15 +205,35 @@
     state.runners.length = 0;
     state.finishedCount = 0;
 
-    const player = MOB.createRunner("YOU", true, 1.0);
+    const player = MOB.createRunner("YOU", true);
+    // player fixed (no CPU params used)
+    player.tier = "P";
+    player.baseMul = 1.0;
+    player.boostSkill = 1.0;
+    player.gimmickSkill = 1.0;
+
     state.runners.push(player);
     state.playerIndex = 0;
 
-    for (const g of MOB.NAMED_GHOSTS) state.runners.push(MOB.createRunner(g.name, false, g.wr));
-    for (const l of MOB.LETTERS) state.runners.push(MOB.createRunner(l, false, 0.30));
+    // build CPU pool by rank order
+    const cpuPool = [];
+    for (const n of MOB.CPU_S) cpuPool.push({ name: n, tier: "S" });
+    for (const n of MOB.CPU_A) cpuPool.push({ name: n, tier: "A" });
+    for (const n of MOB.CPU_B) cpuPool.push({ name: n, tier: "B" });
 
     const race = CONFIG.RACES[ri] || CONFIG.RACES[0] || { name: "EASY", goal: 600, start: 10, survive: 5 };
-    state.runners = state.runners.slice(0, race.start);
+    const needCpu = Math.max(0, race.start - 1);
+
+    for (let i = 0; i < needCpu; i++) {
+      const spec = cpuPool[i] || { name: `CPU-${i + 1}`, tier: "B" };
+      const r = MOB.createRunner(spec.name, false);
+      const prof = MOB.makeCpuProfile(spec.tier);
+      r.tier = prof.tier;
+      r.baseMul = prof.baseMul;
+      r.boostSkill = prof.boostSkill;
+      r.gimmickSkill = prof.gimmickSkill;
+      state.runners.push(r);
+    }
 
     for (const r of state.runners) MOB.resetRunner(r);
 
