@@ -5,6 +5,11 @@
   const MOB = (window.MOB = window.MOB || {});
   const CONFIG = MOB.CONFIG;
 
+  // ゴースト表示範囲（プレイヤー中心にこの距離(m)以内のCPUだけ描く）
+  // ※ここを上げるほど“見える数”が増える（重くなる）
+  const GHOST_VIEW_M = 40; // 40m（おすすめ）
+  const GHOST_VIEW_PX = GHOST_VIEW_M * CONFIG.PX_PER_M;
+
   MOB.beginDraw = function beginDraw(ctx, canvas) {
     const cw = canvas.width;
     const ch = canvas.height;
@@ -57,7 +62,7 @@
     const state = MOB.state;
     const world = MOB.world;
 
-    // goal line (clear & readable)
+    // goal line
     const race = CONFIG.RACES[state.raceIndex] || CONFIG.RACES[0] || { goal: 600 };
     const goalX = race.goal * CONFIG.PX_PER_M;
     const gx = goalX - state.cameraX;
@@ -200,13 +205,19 @@
     MOB.drawStage(ctx);
     MOB.drawObjects(ctx);
 
-    // draw ALL CPUs first (ghost)
-    for (const r of MOB.state.runners) {
-      if (!r.isPlayer) MOB.drawRunner(ctx, r);
-    }
-    // then player
-    MOB.drawRunner(ctx, MOB.state.runners[MOB.state.playerIndex]);
+    const state = MOB.state;
+    const me = state.runners[state.playerIndex];
 
-    if (MOB.state.phase === "countdown") MOB.drawCountdown(ctx);
+    // ゴースト：プレイヤー近傍だけ描画（常に見えるように）
+    for (const r of state.runners) {
+      if (r.isPlayer) continue;
+      if (Math.abs(r.x - me.x) > GHOST_VIEW_PX) continue;
+      MOB.drawRunner(ctx, r);
+    }
+
+    // プレイヤーは最後
+    MOB.drawRunner(ctx, me);
+
+    if (state.phase === "countdown") MOB.drawCountdown(ctx);
   };
 })();
