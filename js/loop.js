@@ -1,22 +1,17 @@
-// js/loop.js  MOB STREET - 1P RUN  (INPUT / LOOP)
+// js/loop.js  MOB STREET - 1P RUN  (INPUT / LOOP)  FIX: stuck-at-0m
 (() => {
   "use strict";
 
   const MOB = (window.MOB = window.MOB || {});
   const CONFIG = MOB.CONFIG;
-  const ui = MOB.ui;
 
-  MOB.input = {
-    jump: false,
-    boost: false,
-    jumpBoost: false
-  };
+  MOB.input = MOB.input || { jump:false, boost:false, jumpBoost:false };
 
   const btnJump = document.getElementById("btnJump");
   const btnBoost = document.getElementById("btnBoost");
-  const btnJB = document.getElementById("btnJumpBoost");
+  const btnJB   = document.getElementById("btnJumpBoost");
 
-  // 表示名を変更＆無効化されてても復帰
+  // アイテムボタン → ジャンプブースト（有効化）
   if (btnJB) {
     btnJB.disabled = false;
     btnJB.style.pointerEvents = "auto";
@@ -24,74 +19,38 @@
     btnJB.textContent = "JUMP BOOST";
   }
 
-  btnJump?.addEventListener("touchstart", (e) => {
-    e.preventDefault();
-    MOB.input.jump = true;
-  }, { passive:false });
+  const onTouch = (fn) => (e) => { e.preventDefault(); fn(); };
 
-  btnBoost?.addEventListener("touchstart", (e) => {
-    e.preventDefault();
-    MOB.input.boost = true;
-  }, { passive:false });
+  btnJump?.addEventListener("touchstart", onTouch(() => (MOB.input.jump = true)), { passive:false });
+  btnBoost?.addEventListener("touchstart", onTouch(() => (MOB.input.boost = true)), { passive:false });
+  btnJB?.addEventListener("touchstart",   onTouch(() => (MOB.input.jumpBoost = true)), { passive:false });
 
-  btnJB?.addEventListener("touchstart", (e) => {
-    e.preventDefault();
-    MOB.input.jumpBoost = true;
-  }, { passive:false });
-
-  // PC用（任意）
+  // PC用
   window.addEventListener("keydown", (e) => {
     if (e.key === " ") MOB.input.jump = true;
     if (e.key === "b") MOB.input.boost = true;
     if (e.key === "n") MOB.input.jumpBoost = true;
   });
 
-  let last = performance.now();
-
-  function loop(now) {
-    const dt = Math.min(0.033, (now - last) / 1000);
-    last = now;
-
-    if (MOB.state.phase === "countdown") {
-      MOB.state.countdown -= dt;
-      if (MOB.state.countdown <= 0) {
-        MOB.state.phase = "run";
-      }
-    } else if (MOB.state.phase === "run") {
-      MOB.updateRun(dt);
-    }
-
-    MOB.render();
-
-    // UI更新（存在する場合だけ）
-    try {
-      MOB.updateRank?.();
-      MOB.ui?.updateTop8?.();
-      MOB.ui?.updateRank?.();
-      MOB.ui?.updateStockBars?.();
-    } catch (_) {}
-
-    requestAnimationFrame(loop);
+  // 「Loading...」表示を消す（存在する要素だけ）
+  function clearLoadingText() {
+    const el =
+      document.getElementById("statusText") ||
+      document.getElementById("loadingText") ||
+      document.querySelector(".loadingText") ||
+      null;
+    if (el) el.textContent = "";
   }
 
-  // CPUプロファイルを必ず作る（引数なし起動でもOKにする）
+  // CPUプロファイルを必ず作る（引数なし起動でもOK）
   function buildCpuProfiles(n) {
-    const arr = [];
-    // もし既存の関数があるならそれを使う
-    if (typeof MOB.makeCpuProfiles === "function") return MOB.makeCpuProfiles(n);
-
-    const clamp01 = (v) => Math.max(0, Math.min(1, v));
     const rr = (a, b) => a + Math.random() * (b - a);
-
-    // 簡易ティア分け（S/A/B）。名前は最低限のフォールバック。
-    const names = [];
-    for (let i = 0; i < n; i++) names.push(`CPU-${i + 1}`);
-
+    const clamp01 = (v) => Math.max(0, Math.min(1, v));
+    const arr = [];
     for (let i = 0; i < n; i++) {
-      const tierRoll = i;
       let tier = "B";
-      if (tierRoll < 2) tier = "S";
-      else if (tierRoll < 6) tier = "A";
+      if (i < 2) tier = "S";
+      else if (i < 6) tier = "A";
 
       let baseMul = 1.0, boostSkill = 0.4, gimmickSkill = 0.4;
       if (tier === "S") {
@@ -109,7 +68,7 @@
       }
 
       arr.push({
-        name: names[i],
+        name: `CPU-${i + 1}`,
         tier,
         baseMul,
         boostSkill: clamp01(boostSkill),
@@ -119,19 +78,46 @@
     return arr;
   }
 
-  MOB.boot = async function boot(cpuProfiles) {
-    // cpuProfiles が無くても動く
+  let last = performance.now();
+
+  function loop(now) {
+    const dt = Math.min(0.033, (now - last) / 1000);
+    last = now;
+
+    // ★ここが修正点：phaseに関係なく「run更新」を回す
+    // （result等の停止条件があるなら、その時だけ止める）
+    if (MOB.state && MOB.state.phase !== "result") {
+      MOB.updateRun?.(dt);
+    }
+
+    MOB.render?.();
+
+    // UI更新（存在する場合だけ）
     try {
+      MOB.ui?.updateTop8?.();
+      MOB.ui?.updateRank?.();
+      MOB.ui?.updateStockBars?.();
+    } catch (_) {}
+
+    requestAnimationFrame(loop);
+  }
+
+  MOB.boot = async function boot(cpuProfiles) {
+    try {
+      clearLoadingText();
+
       await MOB.loadAssets?.();
 
-      const race = CONFIG.RACES[MOB.state.raceIndex] || CONFIG.RACES[0];
+      const race = CONFIG.RACES?.[MOB.state?.raceIndex ?? 0] || CONFIG.RACES?.[0];
       const need = Math.max(0, (race?.start || 10) - 1);
-
       const profiles = Array.isArray(cpuProfiles) ? cpuProfiles : buildCpuProfiles(need);
 
-      MOB.initRace(profiles);
+      MOB.initRace?.(profiles);
 
-      // ここでUI初期表示も更新
+      // ★強制で走行状態に（0m固定を潰す）
+      if (MOB.state) MOB.state.phase = "run";
+
+      // 初期UI
       try {
         MOB.ui?.updateTop8?.();
         MOB.ui?.updateRank?.();
@@ -142,9 +128,8 @@
       requestAnimationFrame(loop);
     } catch (e) {
       console.error(e);
-      // overlayがあるなら出す（存在する場合だけ）
       const title = document.getElementById("overlayTitle");
-      const msg = document.getElementById("overlayMsg");
+      const msg   = document.getElementById("overlayMsg");
       if (title) title.textContent = "Error";
       if (msg) msg.textContent = String(e);
     }
