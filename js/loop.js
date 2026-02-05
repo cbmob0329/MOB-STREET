@@ -1,137 +1,152 @@
-// js/loop.js  MOB STREET - 1P RUN  (INPUT / LOOP)  FIX: stuck-at-0m
+// js/loop.js  MOB STREET - 1P RUN  (BOOT / INPUT / LOOP)
 (() => {
   "use strict";
 
   const MOB = (window.MOB = window.MOB || {});
   const CONFIG = MOB.CONFIG;
 
-  MOB.input = MOB.input || { jump:false, boost:false, jumpBoost:false };
+  function fitCanvasToPlayArea() {
+    const canvas = MOB.ui.canvas;
 
-  const btnJump = document.getElementById("btnJump");
-  const btnBoost = document.getElementById("btnBoost");
-  const btnJB   = document.getElementById("btnJumpBoost");
+    let top = null;
+    const rects = [];
+    if (MOB.ui.btnJump) rects.push(MOB.ui.btnJump.getBoundingClientRect());
+    if (MOB.ui.btnBoost) rects.push(MOB.ui.btnBoost.getBoundingClientRect());
+    if (MOB.ui.btnItem) rects.push(MOB.ui.btnItem.getBoundingClientRect());
 
-  // アイテムボタン → ジャンプブースト（有効化）
-  if (btnJB) {
-    btnJB.disabled = false;
-    btnJB.style.pointerEvents = "auto";
-    btnJB.style.opacity = "1";
-    btnJB.textContent = "JUMP BOOST";
-  }
-
-  const onTouch = (fn) => (e) => { e.preventDefault(); fn(); };
-
-  btnJump?.addEventListener("touchstart", onTouch(() => (MOB.input.jump = true)), { passive:false });
-  btnBoost?.addEventListener("touchstart", onTouch(() => (MOB.input.boost = true)), { passive:false });
-  btnJB?.addEventListener("touchstart",   onTouch(() => (MOB.input.jumpBoost = true)), { passive:false });
-
-  // PC用
-  window.addEventListener("keydown", (e) => {
-    if (e.key === " ") MOB.input.jump = true;
-    if (e.key === "b") MOB.input.boost = true;
-    if (e.key === "n") MOB.input.jumpBoost = true;
-  });
-
-  // 「Loading...」表示を消す（存在する要素だけ）
-  function clearLoadingText() {
-    const el =
-      document.getElementById("statusText") ||
-      document.getElementById("loadingText") ||
-      document.querySelector(".loadingText") ||
-      null;
-    if (el) el.textContent = "";
-  }
-
-  // CPUプロファイルを必ず作る（引数なし起動でもOK）
-  function buildCpuProfiles(n) {
-    const rr = (a, b) => a + Math.random() * (b - a);
-    const clamp01 = (v) => Math.max(0, Math.min(1, v));
-    const arr = [];
-    for (let i = 0; i < n; i++) {
-      let tier = "B";
-      if (i < 2) tier = "S";
-      else if (i < 6) tier = "A";
-
-      let baseMul = 1.0, boostSkill = 0.4, gimmickSkill = 0.4;
-      if (tier === "S") {
-        baseMul = rr(1.03, 1.06);
-        boostSkill = rr(0.80, 0.95);
-        gimmickSkill = rr(0.75, 0.90);
-      } else if (tier === "A") {
-        baseMul = rr(1.00, 1.03);
-        boostSkill = rr(0.55, 0.80);
-        gimmickSkill = rr(0.55, 0.75);
-      } else {
-        baseMul = rr(0.96, 1.00);
-        boostSkill = rr(0.15, 0.55);
-        gimmickSkill = rr(0.20, 0.55);
-      }
-
-      arr.push({
-        name: `CPU-${i + 1}`,
-        tier,
-        baseMul,
-        boostSkill: clamp01(boostSkill),
-        gimmickSkill: clamp01(gimmickSkill)
-      });
+    for (const r of rects) {
+      if (r && r.top > 0) top = (top === null) ? r.top : Math.min(top, r.top);
     }
-    return arr;
+    if (top === null) top = Math.floor(window.innerHeight * 0.65);
+
+    const safePad = 6;
+    const playH = Math.max(260, Math.floor(top - safePad));
+
+    canvas.style.width = "100%";
+    canvas.style.height = playH + "px";
+    canvas.style.display = "block";
   }
 
-  let last = performance.now();
+  function resizeCanvas() {
+    const canvas = MOB.ui.canvas;
+    const ctx = MOB.ui.ctx;
 
-  function loop(now) {
-    const dt = Math.min(0.033, (now - last) / 1000);
-    last = now;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const r = canvas.getBoundingClientRect();
+    const w = Math.max(1, Math.floor(r.width));
+    const h = Math.max(1, Math.floor(r.height));
+    canvas.width = Math.max(1, Math.floor(w * dpr));
+    canvas.height = Math.max(1, Math.floor(h * dpr));
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
 
-    // ★ここが修正点：phaseに関係なく「run更新」を回す
-    // （result等の停止条件があるなら、その時だけ止める）
-    if (MOB.state && MOB.state.phase !== "result") {
-      MOB.updateRun?.(dt);
+  function bindInput() {
+    const input = MOB.input;
+
+    MOB.ui.btnJump?.addEventListener("pointerdown", () => { input.jump = true; });
+    MOB.ui.btnBoost?.addEventListener("pointerdown", () => { input.boost = true; });
+
+    window.addEventListener("keydown", e => {
+      if (e.key === " ") input.jump = true;
+      if (e.key === "b") input.boost = true;
+    });
+
+    // ITEM無効
+    if (MOB.ui.btnItem) {
+      MOB.ui.btnItem.style.opacity = "0.35";
+      MOB.ui.btnItem.style.filter = "grayscale(0.7)";
+      MOB.ui.btnItem.style.pointerEvents = "none";
     }
+  }
 
-    MOB.render?.();
+  function updateCountdown(dt) {
+    MOB.state.countdown -= dt;
+    if (MOB.state.countdown <= 0) MOB.state.phase = "run";
+  }
 
-    // UI更新（存在する場合だけ）
-    try {
-      MOB.ui?.updateTop8?.();
-      MOB.ui?.updateRank?.();
-      MOB.ui?.updateStockBars?.();
-    } catch (_) {}
+  function update(dt) {
+    if (MOB.state.phase === "brief") {
+      MOB.updateRank();
+      MOB.updateTop8();
+      MOB.ui.updateStockBar();
+      return;
+    }
+    if (MOB.state.phase === "countdown") {
+      updateCountdown(dt);
+      MOB.updateRank();
+      MOB.updateTop8();
+      MOB.ui.updateStockBar();
+      return;
+    }
+    if (MOB.state.phase === "run") {
+      MOB.updateRun(dt);
+      return;
+    }
+  }
 
+  function loop(t) {
+    const dt = Math.min((t - MOB.state.lastTime) / 1000, 0.033);
+    MOB.state.lastTime = t;
+
+    if (MOB.state.phase !== "loading") {
+      update(dt);
+    }
+    MOB.render();
     requestAnimationFrame(loop);
   }
 
-  MOB.boot = async function boot(cpuProfiles) {
+  async function boot() {
     try {
-      clearLoadingText();
+      MOB.state.phase = "loading";
+      if (MOB.ui.overlay) MOB.ui.overlay.style.display = "block";
+      if (MOB.ui.overlayTitle) MOB.ui.overlayTitle.textContent = "Loading";
+      if (MOB.ui.overlayMsg) MOB.ui.overlayMsg.textContent = "assets";
 
-      await MOB.loadAssets?.();
+      await MOB.loadAssets((file) => {
+        if (MOB.ui.overlayTitle) MOB.ui.overlayTitle.textContent = "Loading";
+        if (MOB.ui.overlayMsg) MOB.ui.overlayMsg.textContent = file;
+      });
 
-      const race = CONFIG.RACES?.[MOB.state?.raceIndex ?? 0] || CONFIG.RACES?.[0];
-      const need = Math.max(0, (race?.start || 10) - 1);
-      const profiles = Array.isArray(cpuProfiles) ? cpuProfiles : buildCpuProfiles(need);
+      // layout stabilize
+      fitCanvasToPlayArea();
+      resizeCanvas();
+      MOB.ui.attachVersionBadge();
+      MOB.ui.ensureStockBarFill();
 
-      MOB.initRace?.(profiles);
+      await new Promise(res => requestAnimationFrame(() => res()));
+      fitCanvasToPlayArea();
+      resizeCanvas();
+      MOB.ui.attachVersionBadge();
+      MOB.ui.ensureStockBarFill();
 
-      // ★強制で走行状態に（0m固定を潰す）
-      if (MOB.state) MOB.state.phase = "run";
+      if (MOB.ui.overlay) MOB.ui.overlay.style.display = "none";
 
-      // 初期UI
-      try {
-        MOB.ui?.updateTop8?.();
-        MOB.ui?.updateRank?.();
-        MOB.ui?.updateStockBars?.();
-      } catch (_) {}
+      MOB.initRace(0);
 
-      last = performance.now();
+      MOB.state.lastTime = performance.now();
+      MOB.state.phase = "brief";
       requestAnimationFrame(loop);
     } catch (e) {
+      if (MOB.ui.overlay) {
+        MOB.ui.overlay.style.display = "block";
+        if (MOB.ui.overlayTitle) MOB.ui.overlayTitle.textContent = "Error";
+        if (MOB.ui.overlayMsg) MOB.ui.overlayMsg.textContent = String(e);
+      }
       console.error(e);
-      const title = document.getElementById("overlayTitle");
-      const msg   = document.getElementById("overlayMsg");
-      if (title) title.textContent = "Error";
-      if (msg) msg.textContent = String(e);
     }
+  }
+
+  window.addEventListener("resize", () => {
+    fitCanvasToPlayArea();
+    resizeCanvas();
+    MOB.ui.attachVersionBadge();
+    MOB.ui.ensureStockBarFill();
+  });
+
+  MOB.boot = function mobBoot() {
+    // ensure UI ready
+    MOB.ui.attachVersionBadge();
+    bindInput();
+    boot();
   };
 })();
