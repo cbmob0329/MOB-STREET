@@ -1,16 +1,27 @@
+始まらないねー
+
+いつまでたっても始まらないから、前のバージョンを入れ直したら反映された
+
+どうやら新バージョンに問題があるみたいだね
+
+ちなみに戻したバージョンはこれ
+
 // game.js  (FULL)  MOB STREET - 1P RUN
-// VERSION: v6.7.1-cup-stable (FULL)
-// Based on your known-good v6.7-brief-goal-ghost, with CUP select added safely.
-// Goals:
-// - Keep v6.7 behavior intact
-// - Add CUP select (EASY/NORMAL/HARD)
-// - iOS tap reliability: pointerdown + touchstart + click (single-fire guarded)
-// - Never get stuck: menu -> initRace -> brief -> countdown -> run
+// VERSION: v6.6.3-rail-drawfix (FULL)
+// Fix / Improve (based on your feedback):
+// - Platform "snap"/吸い付き防止: dan / track(or) / halfpipe は「上から着地した時だけ乗る」
+// - Jump中(vy<0)は絶対に platform enter しない（横当たりも乗らない）
+// - Jump開始時は onPipe/onDan/onOr を解除（乗り状態から自然に離れる）
+// - dan / pipe / track: 乗っている間は絵（プロファイル）に沿って追従 + 加速
+// - cleanup: オブジェ削除は「完全に画面外（左）+ margin」かつ「誰も参照していない」時だけ
+// - 既存仕様維持: cover+bottom-align / version badge / top8 / result modal / ring / puddle / stocks
+//
+// NOTE: HTML/CSSは変更しません（既存のID/構造を前提）。
 
 (() => {
 "use strict";
 
-const VERSION = "v6.7.1-cup-stable";
+const VERSION = "v6.7-brief-goal-ghost";
 
 /* =======================
    DOM
@@ -252,7 +263,6 @@ function ensureResultModal(){
       flex:1; padding:12px 10px; border:0; border-radius:12px;
       font:800 14px system-ui; color:#fff;
       background:rgba(255,255,255,0.12);
-      touch-action: manipulation;
     }
     #rmBtns button.primary{ background:rgba(0,0,0,0.55); border:1px solid rgba(255,255,255,0.18); }
   `;
@@ -326,7 +336,6 @@ function ensureBriefModal(){
       flex:1;padding:12px 10px;border:0;border-radius:14px;
       font:900 15px system-ui;color:#fff;
       background:rgba(0,0,0,0.60);border:1px solid rgba(255,255,255,0.18);
-      touch-action: manipulation;
     ">START</button>
   `;
 
@@ -354,113 +363,6 @@ function showBrief(){
       : `${race.survive}位以内にゴールすればクリア！`;
   }
   if(briefModal) briefModal.style.display = "flex";
-}
-
-/* ===== CUP SELECT MODAL ===== */
-function ensureCupModal(){
-  let modal = document.getElementById("jsCupModal");
-  if(modal) return modal;
-
-  modal = document.createElement("div");
-  modal.id = "jsCupModal";
-  modal.style.position = "fixed";
-  modal.style.left = "0";
-  modal.style.top = "0";
-  modal.style.right = "0";
-  modal.style.bottom = "0";
-  modal.style.zIndex = "100000"; // above result
-  modal.style.display = "none";
-  modal.style.alignItems = "center";
-  modal.style.justifyContent = "center";
-  modal.style.background = "rgba(0,0,0,0.45)";
-  modal.style.backdropFilter = "blur(6px)";
-  modal.style.pointerEvents = "auto";
-
-  const card = document.createElement("div");
-  card.style.width = "min(92vw, 460px)";
-  card.style.borderRadius = "18px";
-  card.style.background = "rgba(10,12,18,0.92)";
-  card.style.border = "1px solid rgba(255,255,255,0.10)";
-  card.style.boxShadow = "0 20px 60px rgba(0,0,0,0.55)";
-  card.style.overflow = "hidden";
-
-  const head = document.createElement("div");
-  head.style.padding = "18px 16px 12px";
-  head.style.textAlign = "center";
-  head.innerHTML = `
-    <div style="font:900 22px system-ui;color:#fff;letter-spacing:0.6px;">CUP SELECT</div>
-    <div style="margin-top:6px;font:700 12px system-ui;color:rgba(255,255,255,0.70);">
-      EASY / NORMAL / HARD を選んで開始
-    </div>
-  `;
-
-  const body = document.createElement("div");
-  body.style.padding = "12px 14px 16px";
-  body.style.display = "grid";
-  body.style.gridTemplateColumns = "1fr";
-  body.style.gap = "10px";
-
-  const mkBtn = (id, title, sub) => {
-    const b = document.createElement("button");
-    b.id = id;
-    b.style.width = "100%";
-    b.style.border = "1px solid rgba(255,255,255,0.16)";
-    b.style.background = "rgba(255,255,255,0.08)";
-    b.style.color = "#fff";
-    b.style.borderRadius = "14px";
-    b.style.padding = "14px 12px";
-    b.style.textAlign = "left";
-    b.style.touchAction = "manipulation";
-    b.innerHTML = `
-      <div style="font:900 16px system-ui;letter-spacing:0.3px;">${title}</div>
-      <div style="margin-top:4px;font:700 12px system-ui;color:rgba(255,255,255,0.70);">${sub}</div>
-    `;
-    return b;
-  };
-
-  const easy = CONFIG.RACES[0] || { goal:600, survive:16, start:26 };
-  const normal = CONFIG.RACES[1] || { goal:1000, survive:6, start:16 };
-  const hard = CONFIG.RACES[2] || { goal:1200, survive:1, start:8 };
-
-  body.appendChild(mkBtn("cupEasy", "EASY",   `Goal ${easy.goal}m / ${easy.survive}位以内 / ${easy.start}人`));
-  body.appendChild(mkBtn("cupNormal","NORMAL",`Goal ${normal.goal}m / ${normal.survive}位以内 / ${normal.start}人`));
-  body.appendChild(mkBtn("cupHard",  "HARD",  `Goal ${hard.goal}m / ${hard.survive}位以内 / ${hard.start}人`));
-
-  card.appendChild(head);
-  card.appendChild(body);
-  modal.appendChild(card);
-  document.body.appendChild(modal);
-
-  return modal;
-}
-const cupModal = ensureCupModal();
-
-function hideCup(){
-  if(cupModal) cupModal.style.display = "none";
-}
-function showCup(){
-  hideResult();
-  hideBrief();
-  state.phase = "menu";
-  if(cupModal) cupModal.style.display = "flex";
-}
-
-/* ===== Single-fire binding helper (pointer/touch/click) ===== */
-function bindTap(el, fn){
-  if(!el) return;
-  let lock = false;
-  const fire = (e)=>{
-    if(e && typeof e.preventDefault === "function") e.preventDefault();
-    if(lock) return;
-    lock = true;
-    try{ fn(e); } finally {
-      // micro delay avoids double-fire on iOS (touch->click)
-      setTimeout(()=>{ lock = false; }, 180);
-    }
-  };
-  el.addEventListener("pointerdown", fire, { passive:false });
-  el.addEventListener("touchstart",  fire, { passive:false });
-  el.addEventListener("click",       fire, { passive:false });
 }
 
 /* ===== Version badge in control area ===== */
@@ -544,13 +446,6 @@ btnBoost?.addEventListener("pointerdown", ()=>{ input.boost = true; });
 window.addEventListener("keydown", e=>{
   if(e.key===" ") input.jump=true;
   if(e.key==="b") input.boost=true;
-
-  // keyboard-start safety
-  if((e.key==="Enter" || e.key===" ") && state.phase==="brief"){
-    hideBrief();
-    state.countdown = 3;
-    state.phase = "countdown";
-  }
 });
 
 // ITEM無効
@@ -712,7 +607,6 @@ function initRace(idx){
   state.countdown = 3;
   state.phase = "brief";
   hideResult();
-  hideCup();
   showBrief();
 
   resetWorldForRace();
@@ -1312,10 +1206,6 @@ function updateCountdown(dt){
    UPDATE
 ======================= */
 function update(dt){
-  if(state.phase === "menu"){
-    // waiting for cup select
-    return;
-  }
   if(state.phase === "brief"){
     // wait for START
     updateRank();
@@ -1334,7 +1224,6 @@ function update(dt){
     updateRun(dt);
     return;
   }
-  // result: freeze world
 }
 
 /* =======================
@@ -1408,6 +1297,7 @@ function drawObjects(){
   }
 
   // puddle
+
   ctx.fillStyle = "rgba(120,190,255,0.5)";
   for(const p of world.puddles){
     const sx = p.x - state.cameraX;
@@ -1525,17 +1415,15 @@ function render(){
   beginDraw();
   drawSky();
   drawStage();
-  if(state.phase !== "menu"){
-    drawObjects();
+  drawObjects();
 
-    // named ghosts -> player
-    for(const r of state.runners){
-      if(!r.isPlayer && r.winRate > 0.30) drawRunner(r);
-    }
-    if(state.runners[state.playerIndex]) drawRunner(state.runners[state.playerIndex]);
-
-    if(state.phase === "countdown") drawCountdown();
+  // named ghosts -> player
+  for(const r of state.runners){
+    if(!r.isPlayer && r.winRate > 0.30) drawRunner(r);
   }
+  drawRunner(state.runners[state.playerIndex]);
+
+  if(state.phase === "countdown") drawCountdown();
 }
 
 /* =======================
@@ -1577,31 +1465,21 @@ function showResult(){
   if(resultModal) resultModal.style.display = "flex";
 }
 
-bindTap(rmRetry, ()=>{
+rmRetry?.addEventListener("pointerdown", ()=>{
   hideResult();
   initRace(state.raceIndex);
 });
-bindTap(rmNext, ()=>{
+rmNext?.addEventListener("pointerdown", ()=>{
   hideResult();
   const nextIdx = (state.raceIndex < CONFIG.RACES.length - 1) ? (state.raceIndex + 1) : 0;
   initRace(nextIdx);
 });
 
-/* ===== START button (brief) ===== */
-bindTap(bmStart, ()=>{
+bmStart?.addEventListener("pointerdown", ()=>{
   hideBrief();
   state.countdown = 3;
   state.phase = "countdown";
 });
-
-/* ===== CUP select buttons ===== */
-const cupEasyBtn = document.getElementById("cupEasy");
-const cupNormalBtn = document.getElementById("cupNormal");
-const cupHardBtn = document.getElementById("cupHard");
-
-bindTap(cupEasyBtn,   ()=>{ initRace(0); });
-bindTap(cupNormalBtn, ()=>{ initRace(1); });
-bindTap(cupHardBtn,   ()=>{ initRace(2); });
 
 /* =======================
    LOOP
@@ -1643,10 +1521,10 @@ async function boot(){
 
     if(overlay) overlay.style.display="none";
 
-    // Start in CUP select
-    showCup();
+    initRace(0);
 
     state.lastTime = performance.now();
+    state.phase = "brief";
     requestAnimationFrame(loop);
   }catch(e){
     if(overlay){
