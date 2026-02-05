@@ -1,11 +1,3 @@
-始まらないねー
-
-いつまでたっても始まらないから、前のバージョンを入れ直したら反映された
-
-どうやら新バージョンに問題があるみたいだね
-
-ちなみに戻したバージョンはこれ
-
 // game.js  (FULL)  MOB STREET - 1P RUN
 // VERSION: v6.6.3-rail-drawfix (FULL)
 // Fix / Improve (based on your feedback):
