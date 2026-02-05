@@ -12,8 +12,8 @@
 
   MOB.clearPlatforms = function clearPlatforms(r) {
     r.onPipe = false; r.pipeRef = null;
-    r.onDan = false;  r.danRef = null;
-    r.onOr = false;   r.orRef = null;
+    r.onDan  = false; r.danRef  = null;
+    r.onOr   = false; r.orRef   = null;
   };
 
   MOB.doJump = function doJump(r) {
@@ -33,6 +33,24 @@
   MOB.startBoost = function startBoost(r, power, time) {
     r.boostPower = power;
     r.boostTimer = time;
+  };
+
+  // ★ジャンプブースト：低空ジャンプ＋加速（通常ブーストと別枠）
+  MOB.startJumpBoost = function startJumpBoost(r) {
+    // 仕様：地上発動のみ（低空ジャンプの爽快感を安定させる）
+    if (!r.onGround) return;
+
+    MOB.clearPlatforms(r);
+
+    r.vy = -CONFIG.JUMPBOOST_V;
+    r.onGround = false;
+
+    // 仕様：特技ジャンプ後は2段ジャンプ不可（強すぎ抑制）
+    // ※後で「可」にしたいならここを外す
+    r.jumps = 2;
+
+    r.jbPower = CONFIG.JUMPBOOST_ADD;
+    r.jbTimer = CONFIG.JUMPBOOST_TIME;
   };
 
   MOB.danTopY = function danTopY(dan, xCenter) {
@@ -81,12 +99,12 @@
     return { yTop: y, slopeAbs01 };
   };
 
-  // 上から着地のみ
+  // 上から着地のみ（吸い付き対策）
   MOB.tryLandOnPlatform = function tryLandOnPlatform(r, idx, plat, topY, kind) {
     if (r.vy < 0) return false; // ジャンプ上昇中は絶対乗らない
 
     const prevBottom = r.prevY + r.h;
-    const curBottom = r.y + r.h;
+    const curBottom  = r.y + r.h;
 
     if (prevBottom > topY + CONFIG.LAND_EPS) return false;
 
@@ -99,7 +117,6 @@
     r.onGround = true;
     r.jumps = 0;
 
-    // context flag for CPU boost timing
     r.justLandedKind = kind;
     r.justLandedT = 0.22;
 
@@ -116,7 +133,7 @@
     return true;
   };
 
-  // ===== CPU: find next platform for gimmick-jump =====
+  // ===== CPU: 次のplatformを見てジャンプする（既存） =====
   function pickNextPlatform(world, x, maxAhead) {
     let best = null;
     let bestDx = Infinity;
@@ -143,10 +160,35 @@
   function platformTopAt(r, kind, obj) {
     const cx = r.x + r.w * 0.5;
     if (kind === "rail") return obj.y;
-    if (kind === "or") return obj.y;
-    if (kind === "dan") return MOB.danTopY(obj, cx);
+    if (kind === "or")   return obj.y;
+    if (kind === "dan")  return MOB.danTopY(obj, cx);
     if (kind === "pipe") return MOB.pipeTopY(obj, cx).yTop;
     return obj.y;
+  }
+
+  // ===== ストック回復（通常ブースト / ジャンプブースト別）=====
+  function regenStocks(r, dt) {
+    // normal boost
+    if (r.stockBoost < CONFIG.STOCK_MAX) {
+      r.stockBoostT += dt;
+      if (r.stockBoostT >= CONFIG.BOOST_REGEN) {
+        r.stockBoostT = 0;
+        r.stockBoost = Math.min(CONFIG.STOCK_MAX, r.stockBoost + 1);
+      }
+    } else {
+      r.stockBoostT = 0;
+    }
+
+    // jump boost (2秒遅い)
+    if (r.stockJB < CONFIG.STOCK_MAX) {
+      r.stockJBT += dt;
+      if (r.stockJBT >= CONFIG.JUMPBOOST_REGEN) {
+        r.stockJBT = 0;
+        r.stockJB = Math.min(CONFIG.STOCK_MAX, r.stockJB + 1);
+      }
+    } else {
+      r.stockJBT = 0;
+    }
   }
 
   MOB.updateRun = function updateRun(dt) {
@@ -160,14 +202,7 @@
     MOB.spawnWorld(state.cameraX);
     MOB.cleanupWorld();
 
-    // stock regen
-    state.stockTimer += dt;
-    if (state.stockTimer >= CONFIG.STOCK_REGEN) {
-      state.stockTimer = 0;
-      state.stock = Math.min(CONFIG.STOCK_MAX, state.stock + 1);
-    }
-
-    // leader position for rubber band (CPU only)
+    // leader for rubber band (CPU only)
     let leaderX = 0;
     for (const rr of state.runners) leaderX = Math.max(leaderX, rr.x);
 
@@ -179,86 +214,87 @@
 
       r.prevY = r.y;
 
-      // tick context timers
       if (r.justLandedT > 0) r.justLandedT -= dt; else r.justLandedKind = "";
-      if (r.justSlowedT > 0) r.justSlowedT -= dt;
+
+      // regen (player/cpu共通)
+      regenStocks(r, dt);
 
       // ===== AI decisions (CPU) =====
       if (!r.isPlayer) {
         r.aiCd -= dt;
         r.aiBoostCd -= dt;
 
-        // gimmick-jump: try to land on next platform (no suction rule still applies)
-        // condition: grounded and not currently riding a platform
+        // ギミック狙いジャンプ
         if (r.onGround && !r.onPipe && !r.onDan && !r.onOr) {
           const next = pickNextPlatform(world, r.x, 180);
           if (next) {
-            // want to jump if platform top is above ground a bit (or always, to land on top)
             const topY = platformTopAt(r, next.kind, next.obj);
-            const heightGain = Math.max(0, world.groundY - topY); // how high the platform is
-            // Jump window: when approaching within 34~70px. Better gimmickSkill => wider effective window.
+            const heightGain = Math.max(0, world.groundY - topY);
             const dx = next.obj.x - (r.x + r.w * 0.5);
             const inWindow = (dx > 34 && dx < 70);
-            const needHeight = heightGain > 10; // elevated
+            const needHeight = heightGain > 10;
             const p = MOB.clamp((r.gimmickSkill || 0) * (needHeight ? 1.0 : 0.65), 0, 1);
-
-            if (inWindow && Math.random() < p) {
-              MOB.doJump(r);
-            }
+            if (inWindow && Math.random() < p) MOB.doJump(r);
           }
         }
 
-        // fallback random jump (low chance) so B層も少し動く
+        // small random jump
         if (r.aiCd <= 0) {
           r.aiCd = MOB.rand(0.25, 0.55);
-          const base = 0.010; // very small
+          const base = 0.010;
           const extra = (r.gimmickSkill || 0) * 0.020;
           if (Math.random() < (base + extra)) MOB.doJump(r);
         }
 
-        // CPU boost timing (skill-based)
-        if (r.aiBoostCd <= 0 && r.boostTimer <= 0) {
-          const remain = remainingMFor(r.x);
+        const remain = remainingMFor(r.x);
+        const nearGoal = (remain <= 120); // ゴール前補正禁止ゾーン
 
-          // never do rubber/boost "cheat" right before goal
-          const nearGoal = (remain <= 120);
-
-          // best moments
-          const onPipe = r.onPipe;
-          const onOr = r.onOr;
-          const onDan = r.onDan;
-
+        // ===== CPU normal boost =====
+        if (!nearGoal && r.aiBoostCd <= 0 && r.boostTimer <= 0 && r.stockBoost > 0) {
           let want = 0;
 
-          // landed on a platform recently
           if (r.justLandedT > 0) {
             if (r.justLandedKind === "pipe") want = Math.max(want, 0.95);
             if (r.justLandedKind === "or")   want = Math.max(want, 0.80);
             if (r.justLandedKind === "dan")  want = Math.max(want, 0.65);
           }
 
-          // while riding
-          if (onPipe) want = Math.max(want, 0.85);
-          if (onOr)   want = Math.max(want, 0.60);
-          if (onDan)  want = Math.max(want, 0.45);
+          if (r.onPipe) want = Math.max(want, 0.85);
+          if (r.onOr)   want = Math.max(want, 0.60);
+          if (r.onDan)  want = Math.max(want, 0.45);
 
-          // slowed recently (puddle)
-          if (r.justSlowedT > 0) want = Math.max(want, 0.70);
-
-          // chasing (down from leader)
           const gapM = Math.max(0, (leaderX - r.x) / CONFIG.PX_PER_M);
           if (gapM > 25) want = Math.max(want, 0.55);
 
-          // convert to probability using boostSkill
           const skill = MOB.clamp(r.boostSkill || 0, 0, 1);
           const prob = MOB.clamp(want * skill * 0.55, 0, 0.60);
 
-          if (!nearGoal && Math.random() < prob) {
+          if (Math.random() < prob) {
             r.aiBoostCd = CONFIG.AI_BOOST_COOLDOWN;
+            r.stockBoost--;
             MOB.startBoost(r, CONFIG.BOOST_ADD, CONFIG.BOOST_TIME);
-          } else if (nearGoal) {
-            // near goal: still allow natural boost if already active, but do not initiate
-            // (intentionally empty)
+          }
+        }
+
+        // ===== CPU jump boost =====
+        // “爽快感”担当：平地でも使う。通常ブーストより頻度は控えめ。
+        if (!nearGoal && r.stockJB > 0 && r.jbTimer <= 0 && r.onGround) {
+          const skill = MOB.clamp(r.boostSkill || 0, 0, 1);
+          const gapM = Math.max(0, (leaderX - r.x) / CONFIG.PX_PER_M);
+
+          let wantJB = 0.06 + skill * 0.12; // base
+          if (gapM > 18) wantJB += 0.10;    // 置いていかれた時
+
+          // 直前にギミックがある時は少し抑える（狙いジャンプの邪魔をしにくい）
+          const next = pickNextPlatform(world, r.x, 140);
+          if (next && next.dx < 80) wantJB *= 0.55;
+
+          // 連打感を抑える（自然さ）
+          if (r.boostTimer > 0) wantJB *= 0.65;
+
+          if (Math.random() < MOB.clamp(wantJB, 0, 0.30)) {
+            r.stockJB--;
+            MOB.startJumpBoost(r);
           }
         }
       }
@@ -269,10 +305,15 @@
           MOB.doJump(r);
           MOB.input.jump = false;
         }
-        if (MOB.input.boost && state.stock > 0) {
-          state.stock--;
+        if (MOB.input.boost && r.stockBoost > 0) {
+          r.stockBoost--;
           MOB.startBoost(r, CONFIG.BOOST_ADD, CONFIG.BOOST_TIME);
           MOB.input.boost = false;
+        }
+        if (MOB.input.jumpBoost && r.stockJB > 0) {
+          r.stockJB--;
+          MOB.startJumpBoost(r);
+          MOB.input.jumpBoost = false;
         }
       }
 
@@ -281,31 +322,30 @@
       if (!r.isPlayer) {
         baseSpeed *= (r.baseMul || 1.0);
 
-        // rubber band: CPU only, max +4%, disabled near goal (<=120m)
         const remain = remainingMFor(r.x);
         if (remain > 120) {
           const gapM = Math.max(0, (leaderX - r.x) / CONFIG.PX_PER_M);
-          const rubber = MOB.clamp(gapM / 120, 0, 1) * 0.04;
+          const rubber = MOB.clamp(gapM / 120, 0, 1) * 0.04; // max +4%
           baseSpeed *= (1 + rubber);
         }
       }
 
       let speed = baseSpeed;
 
-      // boost
+      // normal boost
       if (r.boostTimer > 0) {
         r.boostTimer -= dt;
         speed += r.boostPower;
       }
 
-      // slow
-      if (r.slowTimer > 0) {
-        r.slowTimer -= dt;
-        speed *= 0.75;
+      // jump boost (separate)
+      if (r.jbTimer > 0) {
+        r.jbTimer -= dt;
+        speed += r.jbPower;
       }
 
       // platform accel
-      if (r.onOr) speed += CONFIG.TRACK_ACCEL_ADD;
+      if (r.onOr)  speed += CONFIG.TRACK_ACCEL_ADD;
       if (r.onDan) speed += CONFIG.DAN_ACCEL_ADD;
 
       let addPipeAccel = 0;
@@ -370,6 +410,7 @@
           r.y = world.groundY - r.h;
           r.vy = 0;
           r.onGround = true;
+          // 特技ジャンプ後に自然復帰
           r.jumps = 0;
         } else {
           r.onGround = false;
@@ -412,15 +453,7 @@
         }
       }
 
-      // puddle
-      for (const p of world.puddles) {
-        if (MOB.rectHit(r.x, r.y, r.w, r.h, p.x, p.y, p.w, p.h)) {
-          r.slowTimer = 0.40;
-          r.justSlowedT = 0.45; // CPU boost trigger window
-        }
-      }
-
-      // ring (runner-specific)
+      // ring
       for (const ring of world.rings) {
         if (ring.takenBy.has(idx)) continue;
 
@@ -449,7 +482,7 @@
 
     MOB.updateRank();
     MOB.updateTop8();
-    if (MOB.ui) MOB.ui.updateStockBar();
+    if (MOB.ui) MOB.ui.updateStockBars();
 
     // survive threshold => result
     if (state.finishedCount >= race.survive) {
