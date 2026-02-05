@@ -4,7 +4,7 @@
 
   const MOB = (window.MOB = window.MOB || {});
 
-  MOB.VERSION = "v6.7-brief-goal-ghost";
+  MOB.VERSION = "v6.7-jumpboost";
 
   MOB.CONFIG = {
     LOGICAL_W: 360,
@@ -19,30 +19,41 @@
     JUMP_V1: 860,
     JUMP_V2: 780,
 
+    // ===== 通常ブースト =====
     BASE_SPEED: 260,
-
     BOOST_ADD: 210,
     BOOST_TIME: 0.85,
+
+    // ===== ジャンプブースト（NEW）=====
+    // 低空ジャンプしながら加速する
+    JUMPBOOST_V: 520,      // 低空ジャンプの上向き初速（小さめ）
+    JUMPBOOST_ADD: 180,    // 加速量（通常より少し弱め）
+    JUMPBOOST_TIME: 0.75,  // 加速時間
 
     // ring 10 => small accel
     RING_NEED: 10,
     RING_BOOST_ADD: 110,
     RING_BOOST_TIME: 0.55,
 
-    // player stock
+    // ===== ストック（別ゲージ） =====
     STOCK_MAX: 5,
-    STOCK_REGEN: 5.0,
-    STOCK_START: 0,
 
-    // AI boost
+    // 通常ブースト：5秒で1回復
+    BOOST_REGEN: 5.0,
+    BOOST_START: 0,
+
+    // ジャンプブースト：通常より2秒遅い（=7秒で1回復）
+    JUMPBOOST_REGEN: 7.0,
+    JUMPBOOST_START: 0,
+
+    // AI boost decision cooldown
     AI_BOOST_COOLDOWN: 5.0,
 
     // Platform landing snap settings (吸い付き防止用)
-    LAND_EPS: 2,         // "上から着地" 判定の許容
-    LAND_SNAP: 10,       // 上面に近い時だけ吸着（ワープ感抑制）
-    MIN_STAY_MARGIN: 6,  // platform滞在判定の余裕
+    LAND_EPS: 2,
+    LAND_SNAP: 10,
+    MIN_STAY_MARGIN: 6,
 
-    // Spawn tuning（控えめ）
     SPAWN: {
       RAIL_MIN: 440,
       RAIL_MAX: 780,
@@ -50,13 +61,12 @@
       PIPE_MIN: 980,
       PIPE_MAX: 1500,
 
-      PUDDLE_MIN: 560,
-      PUDDLE_MAX: 880,
+      // puddle removed
 
       RING_MIN: 170,
       RING_MAX: 260,
 
-      OR_MIN: 980,      // track
+      OR_MIN: 980,
       OR_MAX: 1600,
 
       DAN_MIN: 860,
@@ -65,23 +75,17 @@
       NO_OVERLAP_X: 280
     },
 
-    // Halfpipe profile: left -> bottom -> right
     PIPE_PROFILE: {
       LEFT: 0.28,
       FLAT: 0.18,
-      // RIGHT = 1 - (LEFT+FLAT)
       DEPTH_RATIO: 0.92,
-      BASE_ON_PIPE_ADD: 110, // constant accel while on pipe
-      SLOPE_ADD: 240         // additional accel on slopes
+      BASE_ON_PIPE_ADD: 110,
+      SLOPE_ADD: 240
     },
 
-    // Track accel
     TRACK_ACCEL_ADD: 190,
-
-    // dan accel
     DAN_ACCEL_ADD: 95,
 
-    // Cleanup margins (visual safety)
     CLEANUP_MARGIN: 140,
 
     RACES: [
@@ -103,7 +107,7 @@
     hpr: "hpr.png",
     hpg: "hpg.png",
     ring: "ringtap.png",
-    or: "or.png",   // TRACK
+    or: "or.png",
     dan: "dan.png"
   };
 
