@@ -11,14 +11,12 @@
 
     rails: [],
     pipes: [],
-    puddles: [],
     rings: [],
     ors: [],
     dans: [],
 
     nextRailX: 280,
     nextPipeX: 980,
-    nextPuddleX: 560,
     nextRingX: 220,
     nextOrX: 980,
     nextDanX: 860
@@ -28,14 +26,12 @@
     const w = MOB.world;
     w.rails.length = 0;
     w.pipes.length = 0;
-    w.puddles.length = 0;
     w.rings.length = 0;
     w.ors.length = 0;
     w.dans.length = 0;
 
     w.nextRailX = 280;
     w.nextPipeX = 980;
-    w.nextPuddleX = 560;
     w.nextRingX = 220;
     w.nextOrX = 980;
     w.nextDanX = 860;
@@ -53,7 +49,7 @@
     const min = CONFIG.SPAWN.NO_OVERLAP_X;
     const w = MOB.world;
     const check = (arr) => arr.some(o => Math.abs(o.x - x) < min);
-    return check(w.rails) || check(w.pipes) || check(w.puddles) || check(w.ors) || check(w.dans);
+    return check(w.rails) || check(w.pipes) || check(w.ors) || check(w.dans);
   }
 
   MOB.spawnWorld = function spawnWorld(camX) {
@@ -69,11 +65,6 @@
       const x = w.nextPipeX;
       if (!isTooClose(x)) MOB.addPipe(x);
       w.nextPipeX += MOB.rand(CONFIG.SPAWN.PIPE_MIN, CONFIG.SPAWN.PIPE_MAX);
-    }
-    if (edge > w.nextPuddleX) {
-      const x = w.nextPuddleX;
-      if (!isTooClose(x)) MOB.addPuddle(x);
-      w.nextPuddleX += MOB.rand(CONFIG.SPAWN.PUDDLE_MIN, CONFIG.SPAWN.PUDDLE_MAX);
     }
     if (edge > w.nextOrX) {
       const x = w.nextOrX;
@@ -91,7 +82,6 @@
     }
   };
 
-  // ===== OBJECT ADD =====
   MOB.addRail = function addRail(x) {
     const img = MOB.IMAGES.rail;
     const w = MOB.world;
@@ -115,16 +105,6 @@
 
     const topY = w.groundY - h;
     w.pipes.push({ x, y: topY, w: ww, h, img });
-  };
-
-  MOB.addPuddle = function addPuddle(x) {
-    const w = MOB.world;
-    w.puddles.push({
-      x,
-      y: w.groundY - 8,
-      w: MOB.rand(34, 54),
-      h: 6
-    });
   };
 
   MOB.addRing = function addRing(x) {
@@ -167,7 +147,6 @@
     w.dans.push({ x, y: topY, w: ww, h, img, slopeW });
   };
 
-  // ===== CLEANUP (offscreen only + not referenced) =====
   function anyRunnerRef(obj) {
     const state = MOB.state;
     for (const r of state.runners) {
@@ -193,16 +172,11 @@
     const state = MOB.state;
     const leftLimit = state.cameraX - CONFIG.CLEANUP_MARGIN;
 
-    // rails are never referenced
     w.rails = w.rails.filter(o => (o.x + o.w) >= leftLimit);
-
-    // referenced platforms
     w.pipes = cleanupArray(w.pipes);
-    w.dans = cleanupArray(w.dans);
-    w.ors = cleanupArray(w.ors);
+    w.dans  = cleanupArray(w.dans);
+    w.ors   = cleanupArray(w.ors);
 
-    // simple objects
-    w.puddles = w.puddles.filter(p => (p.x + p.w) >= leftLimit);
     w.rings = w.rings.filter(r => (r.x + 40) >= leftLimit);
   };
 })();
