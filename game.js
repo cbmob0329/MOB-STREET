@@ -22,7 +22,7 @@
   let loaded = 0;
   let ready = false;
 
-  const COURSE_LENGTH = 3000;
+  const COURSE_LENGTH = 12000;
 
   const state = {
     time: 0,
@@ -139,7 +139,7 @@
     if (state.speed < state.baseSpeed) state.speed = state.baseSpeed;
     if (state.speed > state.maxSpeed) state.speed = state.maxSpeed;
 
-    state.distance += state.speed * dt;
+    state.distance += state.speed * dt* 0.45;
     if (state.distance > COURSE_LENGTH) {
       state.distance = 0;
       state.time = 0;
@@ -229,9 +229,9 @@
     const img = images.player;
     if (!img || !img.complete || img.naturalWidth <= 0) return;
 
-    const size = Math.min(w, h) * 0.18;
-    const bob = state.grounded ? Math.sin(state.time * 16) * 3 : 0;
-    const angle = state.grounded ? Math.sin(state.time * 10) * 0.025 : state.playerVy * 0.00035;
+    const size = Math.min(w, h) * 0.135;
+    const bob = state.grounded ? Math.sin(state.time * 16) * 1.2 : 0;
+    const angle = state.grounded ? Math.sin(state.time * 10) * 0.012 : state.playerVy * 0.00022;
 
     ctx.save();
     ctx.translate(state.playerX, state.playerY + bob);
